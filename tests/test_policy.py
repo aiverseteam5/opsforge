@@ -15,7 +15,8 @@ MANIFEST = {
         {"tool": "kubernetes.get_logs", "class": "read_only", "redact": True},
     ],
     "proposals": [
-        {"tool": "kubernetes.rollback_deploy", "class": "reversible"},
+        {"tool": "kubernetes.rollback_deploy", "class": "reversible",
+         "rollback": {"tool": "kubernetes.redeploy", "params": {}}},
         {"tool": "kubernetes.delete_namespace", "class": "destructive"},
     ],
     "policy": {"forbidden_targets": ["k8s://prod/ns/vault*"]},

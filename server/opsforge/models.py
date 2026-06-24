@@ -151,6 +151,11 @@ class Connector(PkMixin, OrgMixin, Base):
     discovered_schema: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="unknown")
     last_health_at: Mapped[datetime.datetime | None] = mapped_column()
+    # G3 consequential boundary: prod connectors always gate; only an explicitly
+    # non_prod connector is eligible for reversible auto-execute. Default prod (safe).
+    environment: Mapped[str] = mapped_column(
+        String(10), nullable=False, server_default="prod"
+    )
     __table_args__ = (
         _enum_ck(
             "kind",
@@ -161,6 +166,7 @@ class Connector(PkMixin, OrgMixin, Base):
             "kind",
         ),
         _enum_ck("transport", ("stdio", "http"), "transport"),
+        _enum_ck("environment", ("prod", "non_prod"), "environment"),
     )
 
 

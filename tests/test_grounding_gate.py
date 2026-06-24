@@ -25,7 +25,9 @@ from opsforge.policy import resolve_proposal
 pytestmark = pytest.mark.usefixtures("db_required")
 
 AS_OF = datetime(2026, 6, 21, tzinfo=UTC)
-_PROPOSAL = {"proposals": [{"tool": "k.restart", "class": "reversible"}]}
+_PROPOSAL = {"proposals": [
+    {"tool": "k.restart", "class": "reversible", "rollback": {"tool": "k.start", "params": {}}}
+]}
 
 
 # --------------------------------------------------------------------------- #

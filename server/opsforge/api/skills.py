@@ -128,6 +128,13 @@ async def graduate_tool(
         raise HTTPException(status_code=400, detail=f"{tool} is not a declared proposal")
     if proposal.get("class") == "destructive":
         raise HTTPException(status_code=400, detail="destructive tools are never gradable")
+    # Irreversible (no declared rollback) is an always-gate property in the consequential
+    # boundary (G3); a grant must never auto-execute an action that cannot be rolled back.
+    if proposal.get("class") == "reversible" and not proposal.get("rollback"):
+        raise HTTPException(
+            status_code=400,
+            detail="only reversible proposals with a declared rollback are gradable",
+        )
 
     min_runs = get_settings().graduation_min_executions
     async with session_factory().begin() as s:

@@ -22,7 +22,16 @@ tools:
   - {tool: kb.process, class: read_only}
   - {tool: kb.search_knowledge, class: read_only}
   - {tool: kb.findings, class: read_only}
-proposals: []
+# G3: the agent may PROPOSE a remediation; the deterministic policy engine disposes. A
+# reversible action on a NON-production target, grounded in HIGH-confidence validated
+# knowledge, with a declared rollback, auto-executes (the safe majority); anything
+# destructive, production-touching, low-grounded, or irreversible gates to a human. The
+# connector + its environment tag are configured by the operator. The agent CANNOT bypass
+# this — it only proposes.
+proposals:
+  - tool: kubernetes.rollback_deploy
+    class: reversible
+    rollback: {tool: kubernetes.redeploy, params: {}}
 subagents: []
 policy:
   max_tool_calls: 12

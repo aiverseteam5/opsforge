@@ -230,7 +230,7 @@ async def record_health(connector_id: UUID, status: str, org_id: Any) -> None:
 
 _CONNECTOR_COLS = (
     "id, org_id, name, kind, transport, endpoint, credentials_enc, "
-    "tool_allowlist, field_mapping, discovered_schema, status"
+    "tool_allowlist, field_mapping, discovered_schema, status, environment"
 )
 
 

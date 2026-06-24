@@ -27,7 +27,7 @@ from .gateway import ModelGateway, make_assistant_message, make_tool_message
 from .graph import neighborhood, render_neighborhood
 from .knowledge import KnowledgeChunkRow, freshness_days, get_chunks
 from .knowledge_tools import INTERNAL_TOOLS
-from .policy import check_tool_call, resolve_proposal
+from .policy import check_tool_call, is_production_target, resolve_proposal
 from .reports import SUBMIT_REPORT_SCHEMA, RcaReport, render_markdown
 from .security import redact
 
@@ -59,10 +59,17 @@ class ToolBelt:
         # Internal read-only tools (kb.*) — a registry handler, not a connector.
         self.internal: dict[str, Any] = {}
         self.org_id: Any = None
+        # Process keys the agent actually READ this run (via a kb.* tool). Grounding for a
+        # proposed action may only come from a process the agent genuinely investigated —
+        # never a free-text process_key the model asserts (binds grounding to investigation).
+        self.investigated: set[str] = set()
 
     async def call(self, fqn: str, params: dict[str, Any], run_id: UUID) -> Any:
         handler = self.internal.get(fqn)
         if handler is not None:
+            pk = (params or {}).get("process_key")
+            if pk:
+                self.investigated.add(str(pk))
             # Stream the read exactly like a connector call (redacted tool_call/
             # tool_result), so the investigation is legible in the run events.
             await append_run_event(
@@ -173,8 +180,14 @@ def _reserved_schemas(manifest: dict[str, Any], depth: int) -> list[dict[str, An
                 "function": {
                     "name": RESERVED_PROPOSE,
                     "description": (
-                        "Propose a remediation (NOT executed; queued for human "
-                        f"approval). Allowed proposal tools: {proposal_tools}."
+                        "Propose a remediation. The deterministic policy engine disposes: a "
+                        "safe action (reversible, on a NON-production target, grounded in "
+                        "HIGH-confidence validated knowledge, with a rollback) auto-executes; "
+                        "anything destructive, production-touching, low-grounded, or "
+                        "irreversible is queued for human approval. Pass `process_key` to name "
+                        "the validated process this action is grounded in (its confidence "
+                        "decides auto vs gate). "
+                        f"Allowed proposal tools: {proposal_tools}."
                     ),
                     "parameters": {
                         "type": "object",
@@ -182,6 +195,7 @@ def _reserved_schemas(manifest: dict[str, Any], depth: int) -> list[dict[str, An
                             "tool": {"type": "string"},
                             "params": {"type": "object"},
                             "target_ref": {"type": "string"},
+                            "process_key": {"type": "string"},
                             "rationale": {"type": "string"},
                         },
                         "required": ["tool"],
@@ -444,7 +458,8 @@ async def _finalize(
 
 
 async def _insert_proposal(
-    run: dict[str, Any], tool_fqn: str, params: dict, target_ref: str | None, trace: dict
+    run: dict[str, Any], tool_fqn: str, params: dict, target_ref: str | None,
+    trace: dict, rollback: dict | None,
 ) -> str:
     import json
 
@@ -453,9 +468,9 @@ async def _insert_proposal(
             await s.execute(
                 text(
                     "INSERT INTO actions (org_id, run_id, skill_id, action_class, "
-                    "tool, params, target_ref, state, policy_trace) "
+                    "tool, params, target_ref, rollback, state, policy_trace) "
                     "VALUES (:org,:run,:skill,:cls,:tool,CAST(:params AS jsonb),"
-                    ":target,:state,CAST(:trace AS jsonb)) RETURNING id"
+                    ":target,CAST(:rollback AS jsonb),:state,CAST(:trace AS jsonb)) RETURNING id"
                 ),
                 {
                     "org": str(run["org_id"]),
@@ -465,6 +480,7 @@ async def _insert_proposal(
                     "tool": tool_fqn,
                     "params": json.dumps(params or {}),
                     "target": target_ref,
+                    "rollback": json.dumps(rollback) if rollback else None,
                     "state": trace["state"],
                     "trace": json.dumps(trace),
                 },
@@ -547,7 +563,8 @@ async def run_agent(
 
                 if tc.name == RESERVED_PROPOSE:
                     out = await _handle_propose(
-                        run, manifest, skill, tc.arguments, grounding
+                        run, manifest, skill, tc.arguments, grounding,
+                        toolbelt.investigated,
                     )
                     await append_run_event(run_id, org_id, "proposal", redact(out))
                     messages.append(make_tool_message(tc, out))
@@ -682,24 +699,95 @@ async def _create_child_run(
     return run_id
 
 
+def _proposal_rollback(manifest: dict[str, Any], tool_fqn: str) -> dict[str, Any] | None:
+    """The rollback the manifest declares for this proposal (None → irreversible)."""
+    for p in manifest.get("proposals", []) or []:
+        if p.get("tool") == tool_fqn:
+            return p.get("rollback")
+    return None
+
+
+def _string_values(obj: Any) -> list[str]:
+    """Every string value reachable in a params structure (dict/list/str), for production
+    scanning — so a prod/customer identifier hidden in params can't dodge the glob backstop."""
+    if isinstance(obj, str):
+        return [obj]
+    if isinstance(obj, dict):
+        return [v for x in obj.values() for v in _string_values(x)]
+    if isinstance(obj, (list, tuple)):
+        return [v for x in obj for v in _string_values(x)]
+    return []
+
+
+async def _proposal_production(
+    org_id: Any, tool_fqn: str, target_ref: str | None, params: dict[str, Any],
+    manifest: dict[str, Any],
+) -> tuple[bool, bool]:
+    """(production, non_prod_attested) for the proposed action. Production iff the proposed
+    tool's connector is tagged prod OR any identifier the action ACTUALLY touches — target_ref
+    OR a param value (the executor acts on params) — matches a production glob. non_prod
+    attestation is a positive operator vouch: the connector exists AND is tagged non_prod (an
+    unknown/untagged connector is NOT attested → the safe auto path gates, fail-closed)."""
+    kind = tool_fqn.split(".", 1)[0]
+    by_kind = await load_connectors_by_kind(org_id)
+    connector = by_kind.get(kind)
+    environment = (connector or {}).get("environment")
+    globs = (manifest.get("policy", {}) or {}).get("production_target_globs")
+    production = is_production_target(environment, target_ref, globs)
+    if not production:
+        production = any(
+            is_production_target(None, v, globs) for v in _string_values(params or {})
+        )
+    return production, environment == "non_prod"
+
+
+async def _proposal_grounding(
+    org_id: Any, process_key: Any, run_grounding: dict[str, Any] | None,
+    investigated: set[str],
+) -> dict[str, Any] | None:
+    """Grounding for THIS action: the confidence of the validated knowledge it rests on. A
+    model-named process_key counts ONLY if the agent actually investigated it this run (kernel
+    -tracked) — never a free-text claim. Absent → the safe auto path gates (safe-error)."""
+    if process_key:
+        if str(process_key) not in investigated:
+            return None  # cited a process it never investigated → not grounding
+        chunks = await get_chunks(org_id, str(process_key))
+        return _grounding_summary(str(process_key), chunks)
+    return run_grounding
+
+
 async def _handle_propose(
     run: dict[str, Any],
     manifest: dict[str, Any],
     skill: dict[str, Any],
     args: dict[str, Any],
     grounding: dict[str, Any] | None = None,
+    investigated: set[str] | None = None,
 ) -> dict[str, Any]:
     tool_fqn = args.get("tool", "")
+    target_ref = args.get("target_ref")
+    params = args.get("params") or {}
+    # The deterministic boundary (G3) disposes: production + the action's own grounding
+    # decide auto-execute vs human gate. The agent only PROPOSES.
+    production, non_prod_attested = await _proposal_production(
+        run["org_id"], tool_fqn, target_ref, params, manifest
+    )
+    prop_grounding = await _proposal_grounding(
+        run["org_id"], args.get("process_key"), grounding, investigated or set()
+    )
     trace = resolve_proposal(
-        manifest, tool_fqn, skill.get("trust_overrides"), grounding=grounding
+        manifest, tool_fqn, skill.get("trust_overrides"),
+        grounding=prop_grounding, production=production, non_prod_attested=non_prod_attested,
     )
     if not trace["allowed"]:
         return {"error": trace["reason"], "policy": trace}
+    rollback = _proposal_rollback(manifest, tool_fqn)
     action_id = await _insert_proposal(
-        run, tool_fqn, args.get("params") or {}, args.get("target_ref"), trace
+        run, tool_fqn, params, target_ref, trace, rollback
     )
-    # A graduated (auto_with_notify) tool is already 'approved' — hand it to the
-    # executor immediately (with the audit trail standing in for "notify").
+    # Auto-execute (the safe majority, or a graduated tool) is already 'approved' — hand it
+    # to the executor immediately (the audit trail stands in for "notify"). Everything
+    # consequential waits in awaiting_approval for a human.
     if trace.get("auto_execute"):
         from .db import enqueue
 
@@ -708,4 +796,7 @@ async def _handle_propose(
                 s, kind="execute_action", payload={"action_id": action_id},
                 org_id=str(run["org_id"]),
             )
-    return {"action_id": action_id, "state": trace["state"], "tool": tool_fqn}
+    return {
+        "action_id": action_id, "state": trace["state"], "tool": tool_fqn,
+        "auto_executed": bool(trace.get("auto_execute")), "reason": trace["reason"],
+    }

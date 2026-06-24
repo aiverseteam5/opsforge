@@ -63,7 +63,9 @@ async def _seed_succeeded_actions(tool: str, n: int) -> None:
 
 async def test_graduation_requires_admin_and_enough_clean_runs():
     await install_builtin_skills()
-    tool = "kubernetes.restart_pod"
+    # rollback_deploy declares a rollback, so it is gradable (an irreversible proposal with
+    # no rollback, e.g. restart_pod, is never gradable under the G3 boundary).
+    tool = "kubernetes.rollback_deploy"
     # Isolate from prior suite runs (the dev DB persists).
     async with session_factory().begin() as s:
         await s.execute(text("DELETE FROM actions WHERE tool=:t"), {"t": tool})
@@ -116,7 +118,9 @@ async def test_graduation_requires_admin_and_enough_clean_runs():
 def test_graduated_tool_auto_approves_in_policy():
     from opsforge.policy import resolve_proposal
 
-    manifest = {"proposals": [{"tool": "k.restart", "class": "reversible"}]}
+    manifest = {"proposals": [
+        {"tool": "k.restart", "class": "reversible", "rollback": {"tool": "k.start"}}
+    ]}
     held = resolve_proposal(manifest, "k.restart", None)
     assert held["state"] == "awaiting_approval"
     graduated = resolve_proposal(manifest, "k.restart", {"k.restart": "auto_with_notify"})

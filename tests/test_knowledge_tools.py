@@ -122,9 +122,9 @@ async def test_process_returns_steps_with_per_step_unverified():
 async def test_findings_and_list_processes():
     org, pk = str(uuid.uuid4()), "incident"
     try:
-        await _seed_process(org, pk, steps=[
-            {"index": 0, "kind": "step", "text": "page on-call",
-             "confidence": 0.8, "low_confidence": False, "source_kinds": ["document"]}], min_conf=0.8)
+        await _seed_process(org, pk, min_conf=0.8, steps=[
+            {"index": 0, "kind": "step", "text": "page on-call", "confidence": 0.8,
+             "low_confidence": False, "source_kinds": ["document"]}])
         await emit_finding(org_id=org, kind="contradiction", process_key=pk,
                            detail={"a": "x", "b": "y"}, evidence_refs=[uuid.uuid4()])
 
