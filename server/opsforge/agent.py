@@ -383,7 +383,10 @@ async def _finalize(
     import json
 
     md = render_markdown(report) if report else None
-    rjson = json.dumps(report.model_dump()) if report else None
+    # Same redaction chokepoint every other agent boundary uses (thought/proposal/subagent/
+    # error). The report is the one surface rendered straight into the user-facing chat
+    # thread, so it must obey the chokepoint too. redact() is idempotent + pure.
+    rjson = json.dumps(redact(report.model_dump())) if report else None
     async with session_factory().begin() as s:
         await s.execute(
             text(
@@ -499,7 +502,7 @@ async def run_agent(
                     report, ack = _parse_report(tc.arguments)
                     if report is not None:
                         await append_run_event(
-                            run_id, org_id, "report", report.model_dump()
+                            run_id, org_id, "report", redact(report.model_dump())
                         )
                     messages.append(make_tool_message(tc, ack))
                     continue
@@ -552,7 +555,7 @@ async def run_agent(
             report = _incomplete_report(
                 "The agent did not submit a report within its budget."
             )
-            await append_run_event(run_id, org_id, "report", report.model_dump())
+            await append_run_event(run_id, org_id, "report", redact(report.model_dump()))
 
         await _finalize(run_id, "done", report, tokens_in, tokens_out)
         return report

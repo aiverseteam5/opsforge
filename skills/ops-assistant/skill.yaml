@@ -1,0 +1,25 @@
+schema: opsforge/skill/v1
+slug: ops-assistant
+version: 0.1.0
+name: Operations assistant
+description: >
+  The conversational operations assistant (Cursor-for-Ops). Answers the operator's
+  natural-language questions grounded in OpsForge's validated knowledge, and — as later
+  milestones wire them — investigates findings/processes and proposes operational actions
+  that route through the trust ladder. G1 is the conversational front door: it answers.
+triggers: [manual]
+inputs:
+  - {name: query, type: string, required: true}
+  - {name: process_key, type: string, required: false}
+context:
+  graph: false
+  change_window_hours: 24
+tools: []
+proposals: []
+subagents: []
+policy:
+  max_tool_calls: 12
+  max_runtime_seconds: 180
+  forbidden_targets: []
+report:
+  format: rca_v1

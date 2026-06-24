@@ -609,7 +609,10 @@ class Message(PkMixin, OrgMixin, Base):
     seq: Mapped[int] = mapped_column(nullable=False, server_default="0")
     __table_args__ = (
         _enum_ck("role", ("user", "assistant", "system"), "role"),
-        Index("ix_messages_conversation_seq", "conversation_id", "seq"),
+        # UNIQUE so two concurrent posts to the same conversation cannot mint the same seq
+        # and silently corrupt thread order — the same invariant ix_run_events_run_seq holds
+        # for run_events. add_message retries on the conflict.
+        Index("ix_messages_conversation_seq", "conversation_id", "seq", unique=True),
     )
 
 

@@ -14,8 +14,10 @@ import { Processes } from "../pages/Processes";
 import { Providers } from "../pages/Providers";
 import { Catalog } from "../pages/Catalog";
 import { CatalogConnect } from "../pages/CatalogConnect";
+import { Chat } from "../pages/Chat";
 
 const NAV: { to?: string; label?: string; end?: boolean; section?: string }[] = [
+  { to: "/assistant", label: "Assistant" },
   { to: "/", label: "Mission Control", end: true },
   { section: "Knowledge & Truth" },
   { to: "/knowledge", label: "Knowledge" },
@@ -80,6 +82,7 @@ export function Layout() {
       <main className="flex-1 overflow-auto p-6">
         <Routes>
           <Route path="/" element={<MissionControl />} />
+          <Route path="/assistant" element={<Chat />} />
           <Route path="/runs/:id" element={<RunDetail />} />
           <Route path="/knowledge" element={<Knowledge />} />
           <Route path="/findings" element={<Findings />} />

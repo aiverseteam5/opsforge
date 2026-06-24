@@ -78,7 +78,7 @@ layers = [
     "agent | actions | dispatch | ingest | reconcile | processes | tickets | knowledge_sources",
     "reports",
     "policy",
-    "skills | graph | ops_adapter | knowledge | confidence | dispositions | findings | reconciliations | catalog",
+    "skills | graph | ops_adapter | knowledge | confidence | dispositions | findings | reconciliations | catalog | chat",
     "connectors | gateway | llm_providers | sources",
     "security",
     "models | ops_model",

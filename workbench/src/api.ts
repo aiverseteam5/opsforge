@@ -151,6 +151,14 @@ export interface CatalogDetail extends CatalogConnector {
   instance_id: string | null; // this workspace's configured instance for this kind, or null
 }
 
+// ---- G1: the chat agent surface ----------------------------------------
+export interface ChatConversation { id: string; title: string; created_at: string }
+export interface ChatMessage {
+  id: string; role: "user" | "assistant" | "system"; content: string;
+  run_id: string | null; seq: number; created_at: string;
+  run_status?: string | null; report?: any; report_md?: string | null;
+}
+
 // ---- endpoints ---------------------------------------------------------
 export const api = {
   listRuns: () => req<RunSummary[]>("/runs"),
@@ -250,6 +258,19 @@ export const api = {
   // ---- A1 catalog (read-only) ----
   getCatalog: () => req<{ zones: CatalogZone[] }>("/catalog"),
   getCatalogEntry: (key: string) => req<CatalogDetail>(`/catalog/${encodeURIComponent(key)}`),
+
+  // ---- G1 chat ----
+  listConversations: () => req<ChatConversation[]>("/chat/conversations"),
+  createConversation: (title?: string) =>
+    req<ChatConversation>("/chat/conversations", {
+      method: "POST", body: JSON.stringify({ title }),
+    }),
+  getChatMessages: (conversationId: string) =>
+    req<ChatMessage[]>(`/chat/conversations/${conversationId}/messages`),
+  postChatMessage: (conversationId: string, content: string) =>
+    req<{ message_id: string; run_id: string; run_status: string }>(
+      `/chat/conversations/${conversationId}/messages`,
+      { method: "POST", body: JSON.stringify({ content }) }),
 
   // Returns the backend's verdict verbatim — promoted, or the 409 not-held message.
   // The UI DISPLAYS this; it cannot manufacture a hold.
