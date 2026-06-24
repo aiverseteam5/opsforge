@@ -1,0 +1,44 @@
+# OpsForge Helm values. One image, three workloads (migrate Job, api, worker).
+image:
+  repository: opsforge
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Required: a urlsafe-base64 32-byte Fernet key. Generate with:
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# In production, set this via --set-string or a pre-created Secret, not in values.
+fernetKey: ""
+
+# Optional secrets (empty disables the feature).
+webhookSecret: ""
+slackBotToken: ""
+slackSigningSecret: ""
+
+# Model string for the ModelGateway (any litellm id).
+model: "claude-sonnet-4-6"
+
+api:
+  replicas: 1
+  port: 8080
+  service:
+    type: ClusterIP
+
+worker:
+  replicas: 3
+
+# Bundled Postgres (pgvector). For production, point externalDatabaseUrl at a
+# managed Postgres 16 + pgvector instead and set postgres.enabled=false.
+postgres:
+  enabled: true
+  image: pgvector/pgvector:pg16
+  user: opsforge
+  password: opsforge
+  database: opsforge
+  storage: 10Gi
+
+externalDatabaseUrl: ""
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

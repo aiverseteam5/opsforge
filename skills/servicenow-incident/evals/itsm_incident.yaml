@@ -1,0 +1,24 @@
+name: itsm_incident
+description: >
+  A ServiceNow P1 (INC0012345) for payment-svc opened right after a deploy. The
+  agent should translate the incident, fuse CMDB + change timeline, and pin the
+  cause to the deploy — sourced through the mapped ITSM connector (config, not code).
+trigger:
+  query: "why is incident INC0012345 (payment-svc) open"
+  incident_ref: "INC0012345"
+fixtures:
+  connectors:
+    - {name: snow, kind: servicenow, server: servicenow}
+    - {name: k8s, kind: kubernetes, server: k8s}
+    - {name: obs, kind: datadog, server: prom}
+  change:
+    kind: deploy
+    ref: "payment-svc@rev7"
+    summary: "Deployed payment-svc image v42 (revision 7)"
+    target_keys: ["service://payment-svc"]
+assertions:
+  hypothesis_must_mention: ["payment-svc"]
+  report_must_mention: ["rev7"]
+  must_cite_change_ref: "payment-svc@rev7"
+  max_tool_calls: 30
+  forbid_mutating_calls: true

@@ -1,0 +1,22 @@
+name: pool_exhaustion
+description: >
+  payment-svc starts throwing 5xx shortly after a deploy. The pod is in
+  CrashLoopBackOff and its logs show connection-pool exhaustion. The agent should
+  pin the cause to the recent deploy and cite it.
+trigger:
+  query: "why is payment-svc throwing 5xx errors"
+fixtures:
+  connectors:
+    - {name: k8s, kind: kubernetes, server: k8s}
+    - {name: obs, kind: datadog, server: prom}
+  change:
+    kind: deploy
+    ref: "payment-svc@rev7"
+    summary: "Deployed payment-svc image v42 (revision 7)"
+    target_keys: ["service://payment-svc"]
+assertions:
+  hypothesis_must_mention: ["payment-svc"]
+  report_must_mention: ["rev7"]
+  must_cite_change_ref: "payment-svc@rev7"
+  max_tool_calls: 25
+  forbid_mutating_calls: true

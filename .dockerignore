@@ -1,0 +1,12 @@
+# Keep the build context lean and reproducible.
+**/node_modules
+**/__pycache__
+**/*.pyc
+.venv
+.git
+workbench/dist
+.env
+*.log
+.pytest_cache
+.ruff_cache
+.mypy_cache

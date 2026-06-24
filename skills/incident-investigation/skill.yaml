@@ -1,0 +1,38 @@
+schema: opsforge/skill/v1
+slug: incident-investigation
+version: 0.1.0
+name: Incident investigation
+description: >
+  Investigates an alert or a question about a misbehaving service. Traverses the
+  ops graph, correlates the change timeline, gathers telemetry, and produces an
+  evidence-chained RCA report. Read-only.
+triggers: [manual, event]
+inputs:
+  - {name: query, type: string, required: true}
+  - {name: incident_ref, type: string, required: false}
+context:
+  graph: true
+  change_window_hours: 24
+  similar_patterns: 3
+tools:
+  - {tool: kubernetes.list_pods, class: read_only}
+  - {tool: kubernetes.list_nodes, class: read_only}
+  - {tool: kubernetes.list_deployments, class: read_only}
+  - {tool: kubernetes.get_events, class: read_only}
+  - {tool: kubernetes.get_logs, class: read_only, redact: true}
+  - {tool: datadog.query_metrics, class: read_only}
+  - {tool: datadog.list_targets, class: read_only}
+proposals:
+  - {tool: kubernetes.rollback_deploy, class: reversible,
+     rollback: {tool: kubernetes.rollback_deploy, note: "roll forward"}}
+  - {tool: kubernetes.restart_pod, class: reversible}
+subagents:
+  - dependency-audit
+policy:
+  max_tool_calls: 25
+  max_runtime_seconds: 420
+  forbidden_targets: []
+report:
+  format: rca_v1
+evals:
+  - evals/pool_exhaustion.yaml

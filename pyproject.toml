@@ -1,0 +1,95 @@
+[project]
+name = "opsforge"
+version = "0.1.0"
+description = "OpsForge — Agentic Operations Runtime"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "psycopg[binary]>=3.2",
+    "alembic>=1.14",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "cryptography>=43",
+    "pgvector>=0.3.6",
+    "python-multipart>=0.0.12",
+    "mcp>=1.2",
+    "croniter>=3.0",
+    "litellm>=1.50",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "import-linter>=2.1",
+]
+
+[project.scripts]
+opsforge = "opsforge.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["server/opsforge"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["server"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# B008: FastAPI's Depends()/Header() in argument defaults is the idiomatic DI
+# pattern, not a bug.
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["server", "evals"]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+mypy_path = "server"
+ignore_missing_imports = true
+
+[tool.importlinter]
+root_package = "opsforge"
+
+# Foundation may not import features. Higher layers may import lower ones, never
+# the reverse. Modules within a layer (separated by '|') may not import each other.
+[[tool.importlinter.contracts]]
+name = "Layered architecture"
+type = "layers"
+containers = ["opsforge"]
+layers = [
+    "api | surfaces",
+    "agent | actions | dispatch | ingest | reconcile | processes | tickets | knowledge_sources",
+    "reports",
+    "policy",
+    "skills | graph | ops_adapter | knowledge | confidence | dispositions | findings | reconciliations | catalog",
+    "connectors | gateway | llm_providers | sources",
+    "security",
+    "models | ops_model",
+    "db",
+    "config",
+]
+
+# Doctrine #3 / #9: the deterministic policy engine must never reach into the
+# (LLM-driven) agent loop. (Redundant with the layered contract, kept explicit.)
+[[tool.importlinter.contracts]]
+name = "policy must not import agent"
+type = "forbidden"
+source_modules = ["opsforge.policy"]
+forbidden_modules = ["opsforge.agent"]

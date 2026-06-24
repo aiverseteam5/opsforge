@@ -1,0 +1,15 @@
+# PagerDuty incident (out-of-box) → canonical ops model.
+incident.ref:
+  field: id
+incident.title:
+  field: title
+incident.priority:
+  field: priority.summary
+  values: {P1: P1, P2: P2, P3: P3, P4: P4, P5: P4}
+incident.state:
+  field: status
+  values: {triggered: new, acknowledged: investigating, resolved: resolved}
+incident.service_ref:
+  field: service.summary
+incident.assignment_group:
+  field: assignments.0.assignee.summary

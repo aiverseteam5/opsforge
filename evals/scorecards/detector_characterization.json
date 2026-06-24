@@ -1,0 +1,21 @@
+{
+  "as_of": "2026-06-22",
+  "cost_estimate": {
+    "est_input_tokens": 2830,
+    "est_usd_per_run": 0.000425,
+    "prompt_chars": 11320
+  },
+  "false_positive_contradiction": {
+    "ambiguous_pairs": 8,
+    "control_caught": 3,
+    "control_real_contradictions": 3,
+    "flagged_as_contradiction": 1,
+    "fp_rate": 0.125
+  },
+  "latency": {
+    "chunks": 120,
+    "detector_seconds": 1.64
+  },
+  "model": "gpt-4o-mini",
+  "note": "characterization, NOT a gate \u2014 a baseline for future regression diffs"
+}

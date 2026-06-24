@@ -1,0 +1,18 @@
+# ServiceNow incident table (out-of-box) → canonical ops model.
+# A customized instance edits this pack (e.g. swap `priority` for `u_priority`).
+incident.ref:
+  field: number
+incident.title:
+  field: short_description
+incident.priority:
+  field: priority
+  values: {"1": P1, "2": P2, "3": P3, "4": P4, "5": P4}
+incident.state:
+  field: state
+  values: {"1": new, "2": investigating, "3": investigating, "6": resolved, "7": closed}
+incident.service_ref:
+  field: cmdb_ci
+incident.assignment_group:
+  field: assignment_group
+incident.sla.deadline:
+  field: sla_due

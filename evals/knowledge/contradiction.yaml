@@ -1,0 +1,121 @@
+name: golden-contradiction
+description: >
+  Known-correct reconciliation outcomes, one per resolution path. `findings` is the
+  COMPLETE expected multiset of finding kinds (gap included where the engine emits
+  one for a single-kind survivor set); the runner also checks STRICTLY that no
+  un-declared kind appears, so a spurious extra finding is caught. `relations` are
+  replayed in scripted mode (engine in isolation); in lexical/llm mode the detector
+  infers them from `content`, written so the keyless lexical floor gets the
+  behaviour-vs-document cases right and HONESTLY misses the same-kind (doc-vs-doc)
+  cases it structurally cannot see.
+cases:
+  - id: descriptive_drift
+    disposition: descriptive
+    chunks:
+      - {kind: behaviour, ref: "obs://practice", age_days: 5,
+         content: "in practice we skip the canary and push straight to all nodes"}
+      - {kind: document, ref: "doc://runbook", age_days: 20,
+         content: "the runbook mandates a staged canary rollout before full deployment"}
+    relations: [{a: 0, b: 1, rel: contradicts}]
+    expect:
+      findings: {drift: 1}   # behaviour+document survivors → no gap
+      superseded: 0
+
+  - id: prescriptive_violation
+    disposition: prescriptive
+    chunks:
+      - {kind: behaviour, ref: "obs://team", age_days: 3,
+         content: "the team merges to main without waiting for any peer review"}
+      - {kind: document, ref: "doc://policy", age_days: 40,
+         content: "change policy requires two approving reviewers before merge"}
+    relations: [{a: 0, b: 1, rel: contradicts}]
+    expect:
+      findings: {violation: 1}
+      superseded: 0
+
+  - id: undeclared_contradiction
+    disposition: null
+    chunks:
+      - {kind: behaviour, ref: "obs://floor", age_days: 2,
+         content: "operators restart the worker pool by hand during an incident"}
+      - {kind: document, ref: "doc://sop", age_days: 15,
+         content: "the standard forbids manual intervention and relies on autoscaling"}
+    relations: [{a: 0, b: 1, rel: contradicts}]
+    expect:
+      findings: {contradiction: 1}
+      superseded: 0
+
+  - id: staleness_supersede
+    disposition: null
+    chunks:
+      - {kind: document, ref: "doc://runbook-2023", age_days: 120,
+         content: "old runbook says deploy with the legacy shell script"}
+      - {kind: document, ref: "doc://runbook-2026", age_days: 0,
+         content: "current runbook says deploy through the pipeline with gates"}
+    relations: [{a: 0, b: 1, rel: contradicts}]
+    expect:
+      # older superseded → the lone survivor is document-only → a not_practiced gap
+      findings: {stale: 1, gap: 1}
+      gap_missing: not_practiced
+      superseded: 1
+
+  - id: contemporaneous_contradiction
+    disposition: null
+    chunks:
+      - {kind: document, ref: "doc://team-a", age_days: 5,
+         content: "team A's note: the freeze window is the last week of the quarter"}
+      - {kind: document, ref: "doc://team-b", age_days: 0,
+         content: "team B's note: there is no freeze window, ship any time"}
+    relations: [{a: 0, b: 1, rel: contradicts}]
+    expect:
+      # contemporaneous (gap < 30d) → NOT stale; two surviving docs → not_practiced gap
+      findings: {contradiction: 1, gap: 1}
+      gap_missing: not_practiced
+      superseded: 0
+
+  - id: no_conflict
+    disposition: descriptive
+    chunks:
+      - {kind: behaviour, ref: "obs://run", age_days: 4,
+         content: "we drain the node redeploy the previous image and verify health"}
+      - {kind: document, ref: "doc://rb", age_days: 10,
+         content: "drain the node redeploy the previous image then verify health checks"}
+    relations: [{a: 0, b: 1, rel: agrees}]
+    expect:
+      findings: {}    # strict: NOTHING may be emitted
+      scored: 2       # positive binding: both chunks were actually reconciled (not silence)
+      superseded: 0
+
+  # --- dedicated gap cases: each single-kind survivor set names its missing side ---
+  - id: behaviour_only_gap
+    disposition: null
+    chunks:
+      - {kind: behaviour, ref: "obs://tribal", age_days: 1,
+         content: "how we actually do it, never written down anywhere"}
+    relations: []
+    expect:
+      findings: {gap: 1}
+      gap_missing: no_documentation
+      scored: 1
+
+  - id: document_only_gap
+    disposition: null
+    chunks:
+      - {kind: document, ref: "doc://shelfware", age_days: 1,
+         content: "a documented procedure no one is observed to follow"}
+    relations: []
+    expect:
+      findings: {gap: 1}
+      gap_missing: not_practiced
+      scored: 1
+
+  - id: research_only_gap
+    disposition: null
+    chunks:
+      - {kind: research, ref: "doc://hunch", age_days: 1,
+         content: "a research hunch with no authoritative source behind it"}
+    relations: []
+    expect:
+      findings: {gap: 1}
+      gap_missing: no_authoritative_source
+      scored: 1

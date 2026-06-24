@@ -1,0 +1,448 @@
+{
+  "as_of": "2026-06-21T00:00:00+00:00",
+  "bands": {
+    "high_min": 0.6,
+    "low_max": 0.45
+  },
+  "scoring_config": {
+    "freshness_halflife_days": 180,
+    "reconcile_staleness_days": 30,
+    "saturation_k": 3.0,
+    "source_ranks": {
+      "behaviour": 3,
+      "document": 2,
+      "research": 1
+    },
+    "w_contradict": 0.3,
+    "w_corroborate": 0.25,
+    "w_fresh": 0.25,
+    "w_source": 0.4
+  },
+  "sets": {
+    "confidence": {
+      "scripted": {
+        "accuracy": 1.0,
+        "cases": [
+          {
+            "checks": {
+              "band[0]=high": true
+            },
+            "id": "high_confidence",
+            "passed": true
+          },
+          {
+            "checks": {
+              "band[0]=low": true
+            },
+            "id": "low_confidence",
+            "passed": true
+          },
+          {
+            "checks": {
+              "monotonic_desc": true
+            },
+            "id": "freshness_decay",
+            "passed": true
+          },
+          {
+            "checks": {
+              "monotonic_asc": true
+            },
+            "id": "corroboration_monotonic",
+            "passed": true
+          },
+          {
+            "checks": {
+              "monotonic_desc": true
+            },
+            "id": "contradiction_monotonic",
+            "passed": true
+          },
+          {
+            "checks": {
+              "band[0]=high": true,
+              "equals_solo[0]": true,
+              "equals_solo[1]": true,
+              "equals_solo[2]": true
+            },
+            "id": "fabricated_agreement_no_lift",
+            "passed": true
+          },
+          {
+            "checks": {
+              "band[0]=low": true,
+              "equals_solo[0]": true
+            },
+            "id": "duplication_cannot_lift_low",
+            "passed": true
+          }
+        ],
+        "failed_cases": [],
+        "mode": "scripted",
+        "passed": 7,
+        "set": "confidence",
+        "total": 7
+      }
+    },
+    "contradiction": {
+      "lexical": {
+        "accuracy": 0.7778,
+        "cases": [
+          {
+            "checks": {
+              "finding:drift==1": true,
+              "no_unexpected_findings": true,
+              "superseded": true
+            },
+            "id": "descriptive_drift",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:violation==1": true,
+              "no_unexpected_findings": true,
+              "superseded": true
+            },
+            "id": "prescriptive_violation",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:contradiction==1": true,
+              "no_unexpected_findings": true,
+              "superseded": true
+            },
+            "id": "undeclared_contradiction",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:gap==1": true,
+              "finding:stale==1": false,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "superseded": false
+            },
+            "id": "staleness_supersede",
+            "passed": false
+          },
+          {
+            "checks": {
+              "finding:contradiction==1": false,
+              "finding:gap==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "superseded": true
+            },
+            "id": "contemporaneous_contradiction",
+            "passed": false
+          },
+          {
+            "checks": {
+              "no_unexpected_findings": true,
+              "scored": true,
+              "superseded": true
+            },
+            "id": "no_conflict",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:gap==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "scored": true
+            },
+            "id": "behaviour_only_gap",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:gap==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "scored": true
+            },
+            "id": "document_only_gap",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:gap==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "scored": true
+            },
+            "id": "research_only_gap",
+            "passed": true
+          }
+        ],
+        "failed_cases": [
+          "staleness_supersede",
+          "contemporaneous_contradiction"
+        ],
+        "mode": "lexical",
+        "passed": 7,
+        "set": "contradiction",
+        "total": 9
+      },
+      "production": {
+        "accuracy": 1.0,
+        "cases": [
+          {
+            "checks": {
+              "finding:drift==1": true,
+              "no_unexpected_findings": true,
+              "superseded": true
+            },
+            "id": "descriptive_drift",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:violation==1": true,
+              "no_unexpected_findings": true,
+              "superseded": true
+            },
+            "id": "prescriptive_violation",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:contradiction==1": true,
+              "no_unexpected_findings": true,
+              "superseded": true
+            },
+            "id": "undeclared_contradiction",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:gap==1": true,
+              "finding:stale==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "superseded": true
+            },
+            "id": "staleness_supersede",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:contradiction==1": true,
+              "finding:gap==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "superseded": true
+            },
+            "id": "contemporaneous_contradiction",
+            "passed": true
+          },
+          {
+            "checks": {
+              "no_unexpected_findings": true,
+              "scored": true,
+              "superseded": true
+            },
+            "id": "no_conflict",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:gap==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "scored": true
+            },
+            "id": "behaviour_only_gap",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:gap==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "scored": true
+            },
+            "id": "document_only_gap",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:gap==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "scored": true
+            },
+            "id": "research_only_gap",
+            "passed": true
+          }
+        ],
+        "failed_cases": [],
+        "mode": "production",
+        "passed": 9,
+        "set": "contradiction",
+        "total": 9
+      },
+      "scripted": {
+        "accuracy": 1.0,
+        "cases": [
+          {
+            "checks": {
+              "finding:drift==1": true,
+              "no_unexpected_findings": true,
+              "superseded": true
+            },
+            "id": "descriptive_drift",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:violation==1": true,
+              "no_unexpected_findings": true,
+              "superseded": true
+            },
+            "id": "prescriptive_violation",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:contradiction==1": true,
+              "no_unexpected_findings": true,
+              "superseded": true
+            },
+            "id": "undeclared_contradiction",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:gap==1": true,
+              "finding:stale==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "superseded": true
+            },
+            "id": "staleness_supersede",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:contradiction==1": true,
+              "finding:gap==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "superseded": true
+            },
+            "id": "contemporaneous_contradiction",
+            "passed": true
+          },
+          {
+            "checks": {
+              "no_unexpected_findings": true,
+              "scored": true,
+              "superseded": true
+            },
+            "id": "no_conflict",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:gap==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "scored": true
+            },
+            "id": "behaviour_only_gap",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:gap==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "scored": true
+            },
+            "id": "document_only_gap",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:gap==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true,
+              "scored": true
+            },
+            "id": "research_only_gap",
+            "passed": true
+          }
+        ],
+        "failed_cases": [],
+        "mode": "scripted",
+        "passed": 9,
+        "set": "contradiction",
+        "total": 9
+      }
+    },
+    "precedence": {
+      "scripted": {
+        "accuracy": 1.0,
+        "cases": [
+          {
+            "checks": {
+              "finding:drift==1": true,
+              "no_unexpected_findings": true,
+              "winner": true
+            },
+            "id": "behaviour_over_document_descriptive",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:violation==1": true,
+              "no_unexpected_findings": true,
+              "winner": true
+            },
+            "id": "document_over_behaviour_prescriptive",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:contradiction==1": true,
+              "finding:gap==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true
+            },
+            "id": "research_never_overrides_document",
+            "passed": true
+          },
+          {
+            "checks": {
+              "finding:contradiction==1": true,
+              "finding:gap==1": true,
+              "gap_missing": true,
+              "no_unexpected_findings": true
+            },
+            "id": "ambiguous_rank_fails_safe",
+            "passed": true
+          }
+        ],
+        "failed_cases": [],
+        "mode": "scripted",
+        "passed": 4,
+        "set": "precedence",
+        "total": 4
+      }
+    }
+  },
+  "ship_decision": {
+    "confidence_unchanged": true,
+    "contradiction": {
+      "baseline_llm": 1.0,
+      "holds": true,
+      "production": 1.0
+    },
+    "precedence_unchanged": true,
+    "rationale": "contradiction HELD (production 1.0 vs baseline llm 1.0), confidence unchanged, precedence unchanged \u2192 SHIP",
+    "ship": true
+  }
+}

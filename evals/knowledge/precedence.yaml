@@ -1,0 +1,57 @@
+name: golden-precedence
+description: >
+  The precedence ladder (behaviour 3 > document 2 > research 1) and the disposition
+  directions, exercised explicitly. Scored in scripted mode (the resolution is pure
+  engine logic given a conflict). `winner` is the chunk index the disposition makes
+  prevail: behaviour for descriptive (drift.winner_chunk), document for prescriptive
+  (violation.standard_chunk).
+cases:
+  # descriptive: reality wins → propose updating the document toward behaviour.
+  - id: behaviour_over_document_descriptive
+    disposition: descriptive
+    chunks:
+      - {kind: behaviour, ref: "obs://reality", age_days: 1, content: "what we actually do now"}
+      - {kind: document, ref: "doc://old", age_days: 30, content: "what the runbook still says"}
+    relations: [{a: 0, b: 1, rel: contradicts}]
+    expect:
+      findings: {drift: 1}   # behaviour+document survivors → no gap
+      winner: 0
+
+  # prescriptive: the document is law → behaviour is flagged as violating it.
+  - id: document_over_behaviour_prescriptive
+    disposition: prescriptive
+    chunks:
+      - {kind: behaviour, ref: "obs://drift", age_days: 1, content: "the team diverged from the standard"}
+      - {kind: document, ref: "doc://standard", age_days: 30, content: "the mandated standard procedure"}
+    relations: [{a: 0, b: 1, rel: contradicts}]
+    expect:
+      findings: {violation: 1}
+      winner: 1
+
+  # research (lowest rank) must NOT override a determinate document: a doc-vs-research
+  # conflict is not a behaviour/document remediation, so it surfaces for a human
+  # (contradiction) — research never silently wins.
+  - id: research_never_overrides_document
+    disposition: descriptive
+    chunks:
+      - {kind: document, ref: "doc://authoritative", age_days: 10, content: "the documented procedure"}
+      - {kind: research, ref: "doc://blogpost", age_days: 0, content: "a blog post suggesting otherwise"}
+    relations: [{a: 0, b: 1, rel: contradicts}]
+    expect:
+      # not a behaviour/document pairing → surfaced, not auto-resolved; document-only
+      # survivor set (document + research, no behaviour) → a not_practiced gap too
+      findings: {contradiction: 1, gap: 1}
+      gap_missing: not_practiced
+
+  # equal-rank conflict can't be resolved by precedence even when a disposition is
+  # declared → fails safe to a contradiction (no silent pick).
+  - id: ambiguous_rank_fails_safe
+    disposition: descriptive
+    chunks:
+      - {kind: behaviour, ref: "obs://witness-a", age_days: 0, content: "witness A's account"}
+      - {kind: behaviour, ref: "obs://witness-b", age_days: 0, content: "witness B's conflicting account"}
+    relations: [{a: 0, b: 1, rel: contradicts}]
+    expect:
+      # equal-rank behaviours → can't pick → contradiction; behaviour-only → gap
+      findings: {contradiction: 1, gap: 1}
+      gap_missing: no_documentation

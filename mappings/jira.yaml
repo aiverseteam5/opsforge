@@ -1,0 +1,15 @@
+# Jira Service Management issue (out-of-box) → canonical ops model.
+incident.ref:
+  field: key
+incident.title:
+  field: fields.summary
+incident.priority:
+  field: fields.priority.name
+  values: {Highest: P1, High: P2, Medium: P3, Low: P4, Lowest: P4}
+incident.state:
+  field: fields.status.name
+  values: {Open: new, "In Progress": investigating, "Under Investigation": investigating, Resolved: resolved, Closed: closed, Done: closed}
+incident.service_ref:
+  field: fields.components.0.name
+incident.assignment_group:
+  field: fields.assignee.displayName

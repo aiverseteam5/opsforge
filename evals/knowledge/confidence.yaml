@@ -1,0 +1,106 @@
+name: golden-confidence
+description: >
+  Known confidence bands and monotonic orderings (bands: low < 0.45, high >= 0.60).
+  Scored in scripted mode — confidence is pure, so these are EXACT. Folds in the
+  M7.2 disjointness calibration: fabricated/duplicated agreement gives no lift, and
+  duplication cannot lift a low chunk past the band.
+cases:
+  # recent, top-rank, two genuinely-disjoint corroborators → unambiguously HIGH.
+  - id: high_confidence
+    chunks:
+      - {kind: behaviour, ref: "root://a", age_days: 0, content: "claim, witness one"}
+      - {kind: behaviour, ref: "root://b", age_days: 0, content: "claim, witness two"}
+      - {kind: behaviour, ref: "root://c", age_days: 0, content: "claim, witness three"}
+    relations:
+      - {a: 0, b: 1, rel: agrees}
+      - {a: 0, b: 2, rel: agrees}
+      - {a: 1, b: 2, rel: agrees}
+    expect:
+      confidence_bands: {0: high}
+
+  # old, lowest-rank, and contradicted → unambiguously LOW.
+  # old, lowest-rank, and contradicted. The contradictor is contemporaneous
+  # (gap < 30d) so this is a LIVE contradiction, not a staleness supersession.
+  - id: low_confidence
+    chunks:
+      - {kind: research, ref: "root://old-a", age_days: 720, content: "a shaky old research note"}
+      - {kind: research, ref: "root://old-b", age_days: 705, content: "another old note that disputes it"}
+    relations: [{a: 0, b: 1, rel: contradicts}]
+    expect:
+      confidence_bands: {0: low}
+
+  # the same claim at 0 / 180 / 720 days → confidence must decay monotonically.
+  - id: freshness_decay
+    chunks:
+      - {kind: document, ref: "root://d0", age_days: 0, content: "the claim"}
+      - {kind: document, ref: "root://d180", age_days: 180, content: "the claim"}
+      - {kind: document, ref: "root://d720", age_days: 720, content: "the claim"}
+    relations: []
+    expect:
+      monotonic_desc: [0, 1, 2]
+
+  # 0 vs 1 vs 2 DISJOINT corroborators (three isolated groups) → monotonic lift.
+  - id: corroboration_monotonic
+    chunks:
+      - {kind: behaviour, ref: "root://solo", age_days: 0, content: "solo claim"}
+      - {kind: behaviour, ref: "root://one-a", age_days: 0, content: "claim with one"}
+      - {kind: behaviour, ref: "root://one-b", age_days: 0, content: "corroborator of one"}
+      - {kind: behaviour, ref: "root://two-a", age_days: 0, content: "claim with two"}
+      - {kind: behaviour, ref: "root://two-b", age_days: 0, content: "corroborator two-b"}
+      - {kind: behaviour, ref: "root://two-c", age_days: 0, content: "corroborator two-c"}
+    relations:
+      - {a: 1, b: 2, rel: agrees}
+      - {a: 3, b: 4, rel: agrees}
+      - {a: 3, b: 5, rel: agrees}
+      - {a: 4, b: 5, rel: agrees}
+    expect:
+      monotonic_asc: [0, 1, 3]
+
+  # 0 vs 1 vs 2 DISTINCT contradictors → confidence must decay monotonically (the
+  # symmetric direction; also the canary for a confidence fn that ignores conflict).
+  - id: contradiction_monotonic
+    chunks:
+      - {kind: behaviour, ref: "root://c0", age_days: 0, content: "uncontested claim"}
+      - {kind: behaviour, ref: "root://c1", age_days: 0, content: "claim contested once"}
+      - {kind: behaviour, ref: "root://cx1", age_days: 0, content: "contradictor one"}
+      - {kind: behaviour, ref: "root://c2", age_days: 0, content: "claim contested twice"}
+      - {kind: behaviour, ref: "root://cx2", age_days: 0, content: "contradictor two"}
+      - {kind: behaviour, ref: "root://cx3", age_days: 0, content: "contradictor three"}
+    relations:
+      - {a: 1, b: 2, rel: contradicts}
+      - {a: 3, b: 4, rel: contradicts}
+      - {a: 3, b: 5, rel: contradicts}
+    expect:
+      monotonic_desc: [0, 1, 3]
+
+  # M7.2 folded: one source restated three times (one root) → ZERO lift; every
+  # chunk scores exactly as a lone source would.
+  - id: fabricated_agreement_no_lift
+    chunks:
+      - {kind: behaviour, ref: "root://one-doc", age_days: 0, content: "restated A"}
+      - {kind: behaviour, ref: "root://one-doc", age_days: 0, content: "restated B"}
+      - {kind: behaviour, ref: "root://one-doc", age_days: 0, content: "restated C"}
+    relations:
+      - {a: 0, b: 1, rel: agrees}
+      - {a: 0, b: 2, rel: agrees}
+      - {a: 1, b: 2, rel: agrees}
+    expect:
+      # absolute anchor (a constant-returning confidence fn would fail this), AND the
+      # no-lift invariant: fresh top-rank solo = 0.65 → high.
+      confidence_bands: {0: high}
+      equals_solo: [0, 1, 2]
+
+  # M7.2 folded (the gate-relevant one): a weak chunk padded with same-root
+  # "agreements" stays LOW — duplication cannot lift it past the band.
+  - id: duplication_cannot_lift_low
+    chunks:
+      - {kind: document, ref: "root://weak", age_days: 180, content: "weak claim"}
+      - {kind: document, ref: "root://weak", age_days: 180, content: "weak claim restated"}
+      - {kind: document, ref: "root://weak", age_days: 180, content: "weak claim again"}
+    relations:
+      - {a: 0, b: 1, rel: agrees}
+      - {a: 0, b: 2, rel: agrees}
+      - {a: 1, b: 2, rel: agrees}
+    expect:
+      confidence_bands: {0: low}
+      equals_solo: [0]

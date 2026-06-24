@@ -1,0 +1,79 @@
+# OpsForge local stack: db + one-shot migrate + api + worker (x3).
+# Requires OPSFORGE_FERNET_KEY in a .env file next to this compose file.
+
+# Shared env WITHOUT the DB URL — each service sets its own so migrate connects
+# as the superuser (DDL + role mgmt) while api/worker connect as the restricted
+# opsforge_app role (M6.6: RLS enforced, not bypassed).
+x-app-env: &app-env
+  OPSFORGE_FERNET_KEY: ${OPSFORGE_FERNET_KEY:?set OPSFORGE_FERNET_KEY in .env}
+  OPSFORGE_LOG_LEVEL: INFO
+  # LLM: the model is a config string; the provider key is read by litellm from
+  # the environment (secrets live in env, never the UI). Set these in .env.
+  OPSFORGE_MODEL: ${OPSFORGE_MODEL:-claude-sonnet-4-6}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: opsforge
+      POSTGRES_PASSWORD: opsforge
+      POSTGRES_DB: opsforge
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opsforge -d opsforge"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # Runs `alembic upgrade head` exactly once so api + workers never race the
+  # migration. api/worker wait for this to complete successfully.
+  migrate:
+    build: .
+    command: ["migrate"]
+    restart: "no"
+    environment:
+      <<: *app-env
+      # superuser: alembic needs DDL + creates the opsforge_app role (0009)
+      OPSFORGE_DATABASE_URL: postgresql+psycopg://opsforge:opsforge@db:5432/opsforge
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    command: ["api"]
+    environment:
+      <<: *app-env
+      # restricted role: RLS is enforced (cannot bypass, cannot DDL)
+      OPSFORGE_DATABASE_URL: postgresql+psycopg://opsforge_app:opsforge_app@db:5432/opsforge
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "8080:8080"
+
+  worker:
+    build: .
+    command: ["worker"]
+    environment:
+      <<: *app-env
+      # restricted role: RLS is enforced (cannot bypass, cannot DDL)
+      OPSFORGE_DATABASE_URL: postgresql+psycopg://opsforge_app:opsforge_app@db:5432/opsforge
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      replicas: 3
+
+volumes:
+  pgdata: {}

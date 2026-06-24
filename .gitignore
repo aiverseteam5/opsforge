@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Env / secrets — never commit
+.env
+
+# Node / SPA
+node_modules/
+workbench/dist/
+
+# Misc
+*.log
+.DS_Store
+
+# Vite/TS build artifacts
+workbench/*.tsbuildinfo
+workbench/vite.config.d.ts

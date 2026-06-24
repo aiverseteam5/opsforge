@@ -1,0 +1,23 @@
+schema: opsforge/skill/v1
+slug: dependency-audit
+version: 0.1.0
+name: Dependency audit
+description: >
+  A focused read-only sub-skill: given a service, checks the health of its
+  immediate dependencies and reports an rca_v1 summary. Designed to be dispatched
+  as a sub-agent by larger investigations.
+triggers: [manual]
+inputs:
+  - {name: query, type: string, required: true}
+context:
+  graph: true
+  change_window_hours: 24
+tools:
+  - {tool: kubernetes.list_pods, class: read_only}
+  - {tool: kubernetes.get_events, class: read_only}
+  - {tool: datadog.query_metrics, class: read_only}
+policy:
+  max_tool_calls: 10
+  max_runtime_seconds: 180
+report:
+  format: rca_v1
