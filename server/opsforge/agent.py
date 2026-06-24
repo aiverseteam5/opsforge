@@ -26,6 +26,7 @@ from .db import append_run_event, session_factory
 from .gateway import ModelGateway, make_assistant_message, make_tool_message
 from .graph import neighborhood, render_neighborhood
 from .knowledge import KnowledgeChunkRow, freshness_days, get_chunks
+from .knowledge_tools import INTERNAL_TOOLS
 from .policy import check_tool_call, resolve_proposal
 from .reports import SUBMIT_REPORT_SCHEMA, RcaReport, render_markdown
 from .security import redact
@@ -55,8 +56,25 @@ class ToolBelt:
         self.sessions: dict[str, ConnectorSession] = {}
         self.schemas: list[dict[str, Any]] = []
         self.available_fqns: list[str] = []
+        # Internal read-only tools (kb.*) — a registry handler, not a connector.
+        self.internal: dict[str, Any] = {}
+        self.org_id: Any = None
 
     async def call(self, fqn: str, params: dict[str, Any], run_id: UUID) -> Any:
+        handler = self.internal.get(fqn)
+        if handler is not None:
+            # Stream the read exactly like a connector call (redacted tool_call/
+            # tool_result), so the investigation is legible in the run events.
+            await append_run_event(
+                run_id, self.org_id, "tool_call",
+                {"tool": fqn, "params": redact(params or {})},
+            )
+            out = await handler(self.org_id, params or {}, run_id)
+            await append_run_event(
+                run_id, self.org_id, "tool_result",
+                {"tool": fqn, "is_error": False, "result": redact(out)},
+            )
+            return out
         kind = fqn.split(".", 1)[0]
         return await self.sessions[kind].call(fqn, params, run_id=run_id)
 
@@ -65,8 +83,28 @@ async def build_toolbelt(
     manifest: dict[str, Any], org_id: Any, stack: AsyncExitStack
 ) -> ToolBelt:
     tb = ToolBelt()
+    tb.org_id = org_id
     read_only_fqns = {t["tool"] for t in manifest.get("tools", []) or []}
-    kinds_needed = {f.split(".", 1)[0] for f in read_only_fqns}
+
+    # Internal read-only tools (kb.*): a manifest fqn is internal iff it is in the
+    # registry — no connector is opened, no credential is touched.
+    for fqn in sorted(read_only_fqns & set(INTERNAL_TOOLS)):
+        spec = INTERNAL_TOOLS[fqn]
+        tb.internal[fqn] = spec.handler
+        tb.available_fqns.append(fqn)
+        tb.schemas.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": fqn_to_name(fqn),
+                    "description": spec.description,
+                    "parameters": spec.parameters,
+                },
+            }
+        )
+
+    connector_fqns = read_only_fqns - set(INTERNAL_TOOLS)
+    kinds_needed = {f.split(".", 1)[0] for f in connector_fqns}
     by_kind = await load_connectors_by_kind(org_id)
     for kind in kinds_needed:
         connector = by_kind.get(kind)
@@ -75,7 +113,7 @@ async def build_toolbelt(
         session = await stack.enter_async_context(open_connector(connector))
         tb.sessions[kind] = session
         for d in await session.list_tool_defs():
-            if d["fqn"] not in read_only_fqns:
+            if d["fqn"] not in connector_fqns:
                 continue
             tb.available_fqns.append(d["fqn"])
             tb.schemas.append(

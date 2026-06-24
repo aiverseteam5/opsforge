@@ -5,8 +5,8 @@ name: Operations assistant
 description: >
   The conversational operations assistant (Cursor-for-Ops). Answers the operator's
   natural-language questions grounded in OpsForge's validated knowledge, and — as later
-  milestones wire them — investigates findings/processes and proposes operational actions
-  that route through the trust ladder. G1 is the conversational front door: it answers.
+  milestones wire them — proposes operational actions that route through the trust ladder.
+  G2: it INVESTIGATES freely over the read-only knowledge plane and answers with evidence.
 triggers: [manual]
 inputs:
   - {name: query, type: string, required: true}
@@ -14,7 +14,14 @@ inputs:
 context:
   graph: false
   change_window_hours: 24
-tools: []
+# Internal read-only tools (kb.*): the investigate surface over the validated knowledge
+# plane. Every one is class read_only, so the trust ladder never gates them — reads are
+# always safe. No connector, no credential. Actions arrive in G3 via `proposals`.
+tools:
+  - {tool: kb.list_processes, class: read_only}
+  - {tool: kb.process, class: read_only}
+  - {tool: kb.search_knowledge, class: read_only}
+  - {tool: kb.findings, class: read_only}
 proposals: []
 subagents: []
 policy:
