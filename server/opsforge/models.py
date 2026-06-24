@@ -588,6 +588,31 @@ class LlmProvider(PkMixin, OrgMixin, Base):
     )
 
 
+class Conversation(PkMixin, OrgMixin, Base):
+    """A chat thread (Cursor-for-Ops, G1). Org-scoped + FORCE RLS like the rest of the
+    plane; each user turn spawns an agent run linked to its messages."""
+
+    __tablename__ = "conversations"
+    title: Mapped[str] = mapped_column(Text, nullable=False, server_default="New conversation")
+    created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+
+
+class Message(PkMixin, OrgMixin, Base):
+    """One turn in a conversation. `role` user|assistant|system; an assistant message links
+    to the `run_id` that produced it (the streamed agent work lives in run_events)."""
+
+    __tablename__ = "messages"
+    conversation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    seq: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    __table_args__ = (
+        _enum_ck("role", ("user", "assistant", "system"), "role"),
+        Index("ix_messages_conversation_seq", "conversation_id", "seq"),
+    )
+
+
 # The canonical set of table names — asserted by tests to catch a dropped table.
 ALL_TABLES: tuple[str, ...] = (
     "users",
@@ -611,4 +636,6 @@ ALL_TABLES: tuple[str, ...] = (
     "findings",
     "validated_processes",
     "llm_providers",
+    "conversations",
+    "messages",
 )
