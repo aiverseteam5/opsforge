@@ -22,7 +22,7 @@ from .connectors import (
     load_connectors_by_kind,
     open_connector,
 )
-from .db import append_run_event, session_factory
+from .db import append_run_event, scope_to_org, session_factory
 from .gateway import ModelGateway, make_assistant_message, make_tool_message
 from .graph import neighborhood, render_neighborhood
 from .knowledge import KnowledgeChunkRow, freshness_days, get_chunks
@@ -464,6 +464,7 @@ async def _insert_proposal(
     import json
 
     async with session_factory().begin() as s:
+        await scope_to_org(s, run["org_id"])  # actions is FORCE-RLS (0022)
         action_id = (
             await s.execute(
                 text(

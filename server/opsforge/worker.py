@@ -86,7 +86,9 @@ async def handle_execute_action(payload: dict[str, Any]) -> None:
     action_id = payload.get("action_id")
     if not action_id:
         raise ValueError("execute_action job missing action_id")
-    await execute_action(UUID(action_id))
+    # payload["org_id"] is the authoritative job org the claim loop stamped (RLS-validated) —
+    # the FORCE-RLS actions table needs it set so the restricted role can see the row.
+    await execute_action(UUID(action_id), payload.get("org_id"))
 
 
 async def handle_ingest(payload: dict[str, Any]) -> None:

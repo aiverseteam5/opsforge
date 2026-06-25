@@ -91,6 +91,31 @@ async def test_slack_button_approve_routes_to_executor():
     assert state == "denied"
 
 
+@pytest.mark.usefixtures("db_required")
+async def test_slack_action_buttons_thread_org_id(monkeypatch):
+    """Each Slack action button MUST pass org_id so the FORCE-RLS actions table (0022) is
+    visible to the restricted role — without it every click fails closed in production. Tests
+    run as the bypass superuser and cannot observe the fail-closed, so guard the call site."""
+    import uuid as _uuid
+
+    seen: dict[str, dict] = {}
+
+    def _spy(name, state):
+        async def _fn(action_id, **kwargs):
+            seen[name] = kwargs
+            return {"state": state, "id": str(action_id)}
+        return _fn
+
+    monkeypatch.setattr(slack, "approve_action", _spy("approve", "approved"))
+    monkeypatch.setattr(slack, "deny_action", _spy("deny", "denied"))
+    monkeypatch.setattr(slack, "dry_run_action", _spy("dry_run", "dry_run_done"))
+    for choice in ("approve", "deny", "dry_run"):
+        await slack.SlackSurface().on_action(
+            {"user": {"id": "U1"}, "actions": [{"action_id": choice, "value": str(_uuid.uuid4())}]}
+        )
+        assert seen[choice].get("org_id"), f"{choice} did not thread org_id (RLS fail-closed)"
+
+
 async def test_url_verification_challenge():
     body = json.dumps({"type": "url_verification", "challenge": "xyz123"}).encode()
     out = await slack.handle_events(body)

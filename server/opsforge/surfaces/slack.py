@@ -232,13 +232,17 @@ class SlackSurface:
             aid = UUID(action_id_raw)
         except (ValueError, TypeError):
             return {"ok": False, "error": "bad action id"}
+        # Slack is a single-org surface; pin the deployment org (same as the worker) so the
+        # FORCE-RLS actions table (0022) is visible to the restricted role — without it every
+        # Approve/Dry-run/Deny click fails closed.
+        org = get_settings().org_id
         try:
             if choice == "approve":
-                return await approve_action(aid, actor_role="operator", actor=actor)
+                return await approve_action(aid, actor_role="operator", actor=actor, org_id=org)
             if choice == "dry_run":
-                return await dry_run_action(aid, actor=actor)
+                return await dry_run_action(aid, actor=actor, org_id=org)
             if choice == "deny":
-                return await deny_action(aid, actor=actor)
+                return await deny_action(aid, actor=actor, org_id=org)
         except Exception as exc:  # noqa: BLE001 - surface a friendly ack
             return {"ok": False, "error": str(exc)}
         return {"ok": True}

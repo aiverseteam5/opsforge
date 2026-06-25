@@ -184,6 +184,29 @@ async def test_undo_respects_priority_escalation():
     assert res["state"] == "rolled_back"
 
 
+async def test_execute_action_is_workspace_scoped():
+    """The executor's by-id load is workspace-scoped: a worker job pinned to the WRONG org can
+    never execute another workspace's action (the explicit org predicate enforces under the dev
+    superuser; FORCE RLS enforces it for the restricted opsforge_app role — proven live)."""
+    await _staging_connector()
+    async with session_factory().begin() as s:
+        aid = (await s.execute(
+            text("INSERT INTO actions (org_id, action_class, tool, params, target_ref, "
+                 "rollback, state, policy_trace) VALUES (:o,'reversible','kubernetes.apply_fix',"
+                 "CAST(:p AS jsonb),:t,CAST(:rb AS jsonb),'approved',CAST(:tr AS jsonb)) "
+                 "RETURNING id"),
+            {"o": DEFAULT_ORG_ID, "p": json.dumps({"target": "k8s://x", "outcome": "ok"}),
+             "t": "k8s://x", "rb": json.dumps({"tool": "kubernetes.revert", "params": {}}),
+             "tr": json.dumps({"allowed": True})})).scalar_one()
+    # a foreign-org executor cannot see it
+    with pytest.raises(ActionError, match="not found"):
+        await execute_action(aid, str(uuid.uuid4()))
+    assert await _state(aid) == "approved"  # untouched
+    # the action's own org executes it
+    res = await execute_action(aid, DEFAULT_ORG_ID)
+    assert res["state"] == "succeeded"
+
+
 async def test_execution_failure_triggers_auto_rollback():
     await _staging_connector()
     aid = await _insert_action("exec_error")

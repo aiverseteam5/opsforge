@@ -13,7 +13,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 from sqlalchemy import text
 
 from ..config import get_settings
-from ..db import record_audit, session_factory
+from ..db import record_audit, scope_to_org, session_factory
 from ..security import Principal, require_token
 from ..skills import (
     SkillValidationError,
@@ -138,6 +138,7 @@ async def graduate_tool(
 
     min_runs = get_settings().graduation_min_executions
     async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)  # actions is FORCE-RLS (0022)
         clean = (
             await s.execute(
                 text(

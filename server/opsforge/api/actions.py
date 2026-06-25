@@ -15,7 +15,7 @@ from ..actions import (
     dry_run_action,
     undo_action,
 )
-from ..db import session_factory
+from ..db import scope_to_org, session_factory
 from ..security import Principal, require_token
 
 router = APIRouter(prefix="/api/v1/actions", tags=["actions"])
@@ -38,6 +38,7 @@ async def list_actions(
         clauses.append("state = :state")
         params["state"] = state
     async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)  # actions is FORCE-RLS (0022)
         rows = (
             await s.execute(
                 text(
@@ -56,6 +57,7 @@ async def list_actions(
 @router.get("/{action_id}")
 async def get_action(action_id: UUID, principal: Principal = Depends(require_token)):
     async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)  # actions is FORCE-RLS (0022)
         row = (
             await s.execute(
                 text("SELECT * FROM actions WHERE id = :id AND org_id = :org"),

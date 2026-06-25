@@ -23,7 +23,7 @@ from uuid import UUID
 from sqlalchemy import text
 
 from .connectors import ConnectorError, load_connectors_by_kind, open_connector
-from .db import append_run_event, enqueue, record_audit, session_factory
+from .db import append_run_event, enqueue, record_audit, scope_to_org, session_factory
 from .security import redact
 
 # Allowed state transitions. Anything not listed is rejected.
@@ -56,6 +56,9 @@ async def _load_action(action_id: UUID, org_id: Any = None) -> dict[str, Any] | 
     if org_id is not None:
         params["org"] = str(org_id)
     async with session_factory().begin() as s:
+        # actions is FORCE-RLS (0022): set the org GUC so the restricted role can read it.
+        if org_id is not None:
+            await scope_to_org(s, org_id)
         row = (
             await s.execute(
                 text(
@@ -74,20 +77,24 @@ async def _transition(
     expected_from: str,
     to_state: str,
     *,
+    org_id: Any,
     extra_sql: str = "",
     extra_params: dict[str, Any] | None = None,
 ) -> bool:
-    """Atomically move an action to `to_state` iff it is currently in
-    `expected_from` and the transition is allowed. Returns True on success."""
+    """Atomically move an action to `to_state` iff it is currently in `expected_from` and the
+    transition is allowed. Workspace-scoped (actions is FORCE-RLS, 0022): the org GUC is set
+    and the UPDATE carries an explicit org predicate, so a transition can never cross
+    workspaces even under the dev superuser (which bypasses RLS). Returns True on success."""
     if to_state not in _TRANSITIONS.get(expected_from, set()):
         raise ActionError(f"illegal transition {expected_from} -> {to_state}")
-    params = {"id": action_id, "to": to_state, "from": expected_from}
+    params = {"id": action_id, "to": to_state, "from": expected_from, "org": str(org_id)}
     params.update(extra_params or {})
     async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
         res = await s.execute(
             text(
                 f"UPDATE actions SET state = :to {extra_sql} "
-                "WHERE id = :id AND state = :from"
+                "WHERE id = :id AND state = :from AND org_id = :org"
             ),
             params,
         )
@@ -148,6 +155,7 @@ async def approve_action(
         action_id,
         action["state"],
         "approved",
+        org_id=action["org_id"],
         extra_sql=", approved_by = :by, approved_at = now()",
         extra_params={"by": _actor_uuid(actor)},
     )
@@ -167,7 +175,7 @@ async def deny_action(action_id: UUID, *, actor: str, org_id: Any = None) -> dic
     action = await _load_action(action_id, org_id)
     if action is None:
         raise ActionError("action not found")
-    if not await _transition(action_id, action["state"], "denied"):
+    if not await _transition(action_id, action["state"], "denied", org_id=action["org_id"]):
         raise ActionError(f"cannot deny from state {action['state']}")
     await _audit(action, actor, "action.denied")
     return {"state": "denied", "id": str(action_id)}
@@ -205,18 +213,18 @@ async def undo_action(
         raise ActionError(f"no connector for kind {kind}")
 
     # Atomic claim — a concurrent undo loses the race and never re-runs the rollback.
-    if not await _transition(action_id, "succeeded", "rolling_back"):
+    if not await _transition(action_id, "succeeded", "rolling_back", org_id=action["org_id"]):
         raise ActionError("undo race lost; action state changed")
     await _audit(action, actor, "action.undo_requested", detail={"via": rollback["tool"]})
     try:
         async with open_connector(connector) as cs:
             await cs.call(rollback["tool"], rollback.get("params") or {}, run_id=action["run_id"])
     except Exception as exc:  # noqa: BLE001 - on failure the forward action stays in effect
-        await _transition(action_id, "rolling_back", "succeeded")
+        await _transition(action_id, "rolling_back", "succeeded", org_id=action["org_id"])
         await _audit(action, actor, "action.undo_failed",
                      detail={"error": str(redact(str(exc)))})
         raise ActionError(f"rollback failed: {redact(str(exc))}") from exc
-    await _transition(action_id, "rolling_back", "rolled_back")
+    await _transition(action_id, "rolling_back", "rolled_back", org_id=action["org_id"])
     await _audit(action, actor, "action.undone", detail={"via": rollback["tool"]})
     return {"state": "rolled_back", "id": str(action_id)}
 
@@ -234,7 +242,7 @@ async def dry_run_action(action_id: UUID, *, actor: str, org_id: Any = None) -> 
         "rollback": action["rollback"],
         "note": "dry-run only; no mutating tool was called",
     }
-    await _transition(action_id, action["state"], "dry_run_done")
+    await _transition(action_id, action["state"], "dry_run_done", org_id=action["org_id"])
     await _audit(action, actor, "action.dry_run", detail=plan)
     return {"state": "dry_run_done", "plan": plan}
 
@@ -242,8 +250,10 @@ async def dry_run_action(action_id: UUID, *, actor: str, org_id: Any = None) -> 
 # --------------------------------------------------------------------------- #
 # Execution (called from the worker via execute_action job)
 # --------------------------------------------------------------------------- #
-async def execute_action(action_id: UUID) -> dict[str, Any]:
-    action = await _load_action(action_id)
+async def execute_action(action_id: UUID, org_id: Any = None) -> dict[str, Any]:
+    # `org_id` is the AUTHORITATIVE job org the worker pinned at claim (RLS-validated) —
+    # required so the FORCE-RLS actions table is visible to the restricted role.
+    action = await _load_action(action_id, org_id)
     if action is None:
         raise ActionError("action not found")
     _require_policy_trace(action)
@@ -254,7 +264,7 @@ async def execute_action(action_id: UUID) -> dict[str, Any]:
                      detail={"reason": "change freeze in effect"})
         return {"state": action["state"], "frozen": True}
 
-    if not await _transition(action_id, "approved", "executing"):
+    if not await _transition(action_id, "approved", "executing", org_id=action["org_id"]):
         raise ActionError(f"cannot execute from state {action['state']}")
     await _audit(action, "system:executor", "action.executing")
 
@@ -279,7 +289,7 @@ async def execute_action(action_id: UUID) -> dict[str, Any]:
         return {"state": "rolled_back" if action.get("rollback") else "failed"}
 
     await _transition(
-        action_id, "executing", "succeeded",
+        action_id, "executing", "succeeded", org_id=action["org_id"],
         extra_sql=", executed_at = now(), result = CAST(:res AS jsonb)",
         extra_params={"res": _json(redact(result))},
     )
@@ -336,7 +346,7 @@ async def _health_ok(cs, kind: str, target_ref: str | None, run_id) -> bool:
 
 async def _fail(action: dict[str, Any], *, reason: str) -> None:
     await _transition(
-        action["id"], "executing", "failed",
+        action["id"], "executing", "failed", org_id=action["org_id"],
         extra_sql=", result = CAST(:res AS jsonb)",
         extra_params={"res": _json({"error": reason})},
     )
@@ -352,7 +362,7 @@ async def _maybe_rollback(action: dict[str, Any], connector: dict, kind: str) ->
             await cs.call(
                 rollback["tool"], rollback.get("params") or {}, run_id=action["run_id"]
             )
-        await _transition(action["id"], "failed", "rolled_back")
+        await _transition(action["id"], "failed", "rolled_back", org_id=action["org_id"])
         await _audit(
             action, "system:executor", "action.rolled_back",
             detail={"via": rollback["tool"]},
