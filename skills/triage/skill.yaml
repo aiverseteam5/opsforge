@@ -1,0 +1,55 @@
+schema: opsforge/skill/v1
+slug: triage
+version: 0.1.0
+name: Service triage
+description: >
+  Triage an incoming service-health ticket: validate the reported signal against ground truth
+  BEFORE any remediation, catch false/stale alerts, and propose ONE gated fix for a human.
+# The commissioning charter — this workspace's agents' role/purpose. Operation-agnostic: a
+# human-readable statement, NOT domain logic in code.
+charter: >
+  This workspace's agents triage incoming operational tickets for the platform on-call team.
+  They validate every reported signal against the live system before acting, never trust an
+  alert at face value, surface report-vs-reality honestly, and propose remediations that a human
+  approves. Read-heavy; consequential actions are gated.
+triggers: [manual, event]
+inputs:
+  - {name: query, type: string, required: true}
+  - {name: service, type: string, required: false}
+  - {name: incident_ref, type: string, required: false}
+  - {name: process_key, type: string, required: false}
+context:
+  graph: false
+  change_window_hours: 24
+# The operation this skill works is LEARNED from these sources at commission time (the M6
+# ingest->reconcile->validate loop), never coded. local_dir = a server-visible folder ingested
+# as documents and grouped under process_key for reconciliation.
+knowledge_sources:
+  - {kind: local_dir, ref: /data/corpus/service-health-triage, process_key: service-health-triage}
+# Read-only investigate surface: the learned process (what to check) + the live monitor (ground
+# truth). All class read_only, so the trust ladder never gates a read.
+tools:
+  - {tool: kb.list_processes, class: read_only}
+  - {tool: kb.process, class: read_only}
+  - {tool: kb.search_knowledge, class: read_only}
+  - {tool: kb.findings, class: read_only}
+  - {tool: monitoring.get_service_status, class: read_only}
+# ONE gated remediation: adjust the monitoring data-pull interval (the stale-alert fix from the
+# learned process). The deterministic engine disposes — a config change to an un-vouched
+# (prod-default) monitoring connector is production-touching and GATES for a human. Reversible:
+# the rollback restores the prior interval, captured at execute-time — ${params.service} is the
+# service the forward call targeted and ${result.old_interval_seconds} is the interval it
+# returned, which the engine resolves from the forward action before reverting.
+proposals:
+  - tool: monitoring.set_pull_interval
+    class: reversible
+    rollback:
+      tool: monitoring.set_pull_interval
+      params: {service: "${params.service}", seconds: "${result.old_interval_seconds}"}
+policy:
+  max_tool_calls: 10
+  max_runtime_seconds: 180
+  forbidden_targets: []
+report:
+  format: rca_v1
+evals: [evals/false_alert.yaml]

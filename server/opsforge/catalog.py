@@ -150,6 +150,13 @@ CATALOG: list[CatalogEntry] = [
         implementation_status="stub_coming_soon",
         description="Metrics & alert rules as telemetry signal.",
     ),
+    CatalogEntry(
+        key="monitoring", display_name="Monitoring (generic)", zone="Observability",
+        auth_type="api_key", ingests=["telemetry"], transport="mcp_stdio",
+        implementation_status="stub_coming_soon",
+        description="Generic service-health monitor — live status reads to validate a ticket's "
+                    "signal against ground truth. Operator config UI coming; the kind is wired.",
+    ),
     # --- Automation engines ---
     CatalogEntry(
         key="ansible", display_name="Ansible", zone="Automation engines",

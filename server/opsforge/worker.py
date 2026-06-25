@@ -163,6 +163,69 @@ async def handle_reconcile(payload: dict[str, Any]) -> None:
     await generate_process(org_id, process_key, drafter=configured_drafter())
 
 
+async def _purge_document_chunks(org_id: Any, process_key: str) -> None:
+    """Remove a process's previously-ingested DOCUMENT-family chunks so a re-commission re-learns
+    from a clean set instead of accumulating duplicates (which would double the learned process's
+    steps). Behaviour-ranked chunks (e.g. real ticket-derived signal) are deliberately preserved —
+    only document/research, which the ingest step deterministically re-creates, are purged.
+    RLS-scoped; generic (no domain knowledge), keyed on the manifest-declared process."""
+    async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
+        await s.execute(
+            text(
+                "DELETE FROM knowledge_chunks WHERE org_id = :o AND process_key = :pk "
+                "AND source_kind IN ('document', 'research')"
+            ),
+            {"o": str(org_id), "pk": process_key},
+        )
+
+
+async def handle_commission(payload: dict[str, Any]) -> None:
+    """Commission a workspace from a skill's manifest: LEARN the operation by ingesting its
+    declared `knowledge_sources` then reconciling each into a validated process. Orchestrates the
+    EXISTING M6 steps in order (ingest -> reconcile -> generate) in one job so reconcile never
+    races ingest; adds ZERO learn logic and ZERO domain knowledge (the operation is named by the
+    manifest, never coded). Idempotent: a re-commission replaces each process's document set
+    rather than accumulating duplicate chunks/steps."""
+    from .ingest import configured_embedder, ingest_directory
+    from .processes import configured_drafter, generate_process
+    from .reconcile import configured_detector, reconcile_process
+    from .skills import get_skill
+
+    org_id = payload.get("org_id")
+    slug = payload.get("skill_slug")
+    if not org_id or not slug:
+        raise ValueError("commission job missing org_id or skill_slug")
+    skill = await get_skill(slug)
+    if skill is None:
+        raise ValueError(f"commission: skill {slug!r} is not installed")
+    sources = (skill.get("manifest") or {}).get("knowledge_sources") or []
+
+    process_keys: list[str] = []
+    purged: set[str] = set()
+    for src in sources:
+        ref, pk = src.get("ref"), src.get("process_key")
+        if src.get("kind") != "local_dir" or not ref:
+            logger.warning("commission %s: skipping source kind %r (Slice 1 supports local_dir)",
+                           slug, src.get("kind"))
+            continue
+        # Re-learn cleanly: purge this process's prior documents once (before any re-ingest of it)
+        # so a re-commission does not duplicate chunks/steps.
+        if pk and pk not in purged:
+            await _purge_document_chunks(org_id, pk)
+            purged.add(pk)
+        await ingest_directory(ref, org_id=org_id, embedder=configured_embedder())
+        if pk and pk not in process_keys:
+            process_keys.append(pk)
+
+    detector = await configured_detector(org_id)
+    drafter = configured_drafter()
+    for pk in process_keys:
+        await reconcile_process(org_id, pk, detector=detector)
+        await generate_process(org_id, pk, drafter=drafter)
+    logger.info("commissioned %s: learned %d process(es) %s", slug, len(process_keys), process_keys)
+
+
 # Dispatch table by job.kind.
 HANDLERS: dict[str, Handler] = {
     "noop": handle_noop,
@@ -173,6 +236,7 @@ HANDLERS: dict[str, Handler] = {
     "ingest_tickets": handle_ingest_tickets,
     "ingest_knowledge": handle_ingest_knowledge,
     "reconcile": handle_reconcile,
+    "commission": handle_commission,
 }
 
 

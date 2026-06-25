@@ -65,18 +65,35 @@ class SkillReport(BaseModel):
     format: str = "rca_v1"
 
 
+class KnowledgeSource(BaseModel):
+    """A source the commission step bootstraps from to LEARN this operation (the M6 loop).
+    `kind` local_dir → ingest a server-visible folder; connector → pull from a configured
+    connector of that kind. `process_key` groups the ingested chunks for reconciliation. The
+    manifest only NAMES sources — it encodes no domain logic (the operation stays learned, not
+    coded)."""
+
+    kind: Literal["local_dir", "connector"]
+    ref: str
+    process_key: str | None = None
+
+
 class SkillManifest(BaseModel):
     schema_: str = Field(alias="schema")
     slug: str
     version: str
     name: str
     description: str = ""
+    # The commissioning charter: this workspace's agents' role/purpose. Operation-agnostic — a
+    # human-readable statement, never domain logic in code.
+    charter: str = ""
     triggers: list[Literal["manual", "event", "schedule"]] = Field(default_factory=list)
     inputs: list[SkillInput] = Field(default_factory=list)
     context: SkillContext = Field(default_factory=SkillContext)
     tools: list[ToolDecl] = Field(default_factory=list)
     proposals: list[ProposalDecl] = Field(default_factory=list)
     subagents: list[str] = Field(default_factory=list)  # skill slugs this may delegate to
+    # Sources the commission step ingests+reconciles so the agent learns this operation.
+    knowledge_sources: list[KnowledgeSource] = Field(default_factory=list)
     policy: SkillPolicy = Field(default_factory=SkillPolicy)
     report: SkillReport = Field(default_factory=SkillReport)
     evals: list[str] = Field(default_factory=list)
@@ -88,7 +105,8 @@ class SkillManifest(BaseModel):
     def _empty_sections_to_lists(cls, data: Any) -> Any:
         # A YAML section left with only comments parses as None; treat it as empty.
         if isinstance(data, dict):
-            for key in ("triggers", "inputs", "tools", "proposals", "subagents", "evals"):
+            for key in ("triggers", "inputs", "tools", "proposals", "subagents", "evals",
+                        "knowledge_sources"):
                 if data.get(key) is None and key in data:
                     data[key] = []
         return data

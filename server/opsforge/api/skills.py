@@ -13,7 +13,7 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 from sqlalchemy import text
 
 from ..config import get_settings
-from ..db import record_audit, scope_to_org, session_factory
+from ..db import enqueue, record_audit, scope_to_org, session_factory
 from ..security import Principal, require_token
 from ..skills import (
     SkillValidationError,
@@ -101,6 +101,30 @@ async def skill_detail(slug: str, principal: Principal = Depends(require_token))
         "instructions": skill["instructions"],
         "trust_overrides": skill["trust_overrides"],
     }
+
+
+@router.post("/{slug}/commission", status_code=202)
+async def commission_skill(slug: str, principal: Principal = Depends(require_token)):
+    """Commission this workspace's agents from a skill manifest: LEARN the operation by ingesting
+    the manifest's declared `knowledge_sources` and reconciling them into validated processes (the
+    M6 loop), in one job. A deliberate operator act (admin only), audited. Returns the job id."""
+    if principal.role != "admin":
+        raise HTTPException(status_code=403, detail="commission requires admin")
+    skill = await get_skill(slug)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="skill not found")
+    async with session_factory().begin() as s:
+        job_id = await enqueue(
+            s, kind="commission",
+            payload={"org_id": principal.org_id, "skill_slug": slug},
+            org_id=principal.org_id,
+        )
+    await record_audit(
+        principal.org_id,
+        actor=f"user:{principal.user_id}" if principal.user_id else "system",
+        event="skill.commissioned", subject_ref=slug, detail={"job_id": str(job_id)},
+    )
+    return {"job_id": str(job_id), "kind": "commission"}
 
 
 @router.post("/{slug}/graduate")

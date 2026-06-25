@@ -64,6 +64,11 @@ services:
     volumes:
       # Realistic ITIL TEST corpus (synthetic) for the ingest→reconcile loop proof, read-only.
       - ./itil-test-corpus:/data/itil:ro
+      # Slice-1 sample-operation corpora the commission step LEARNS from (read-only, TEST DATA).
+      - ./corpus:/data/corpus:ro
+      # DEV-ONLY: the contract-faithful FAKE MCP servers (TEST DATA) so the local stack can run
+      # the Slice-1 validate-the-signal proof without a real monitoring endpoint. Not in prod.
+      - ./tests/fake_mcp:/app/tests/fake_mcp:ro
 
   worker:
     build: .
@@ -78,6 +83,11 @@ services:
     volumes:
       # Realistic ITIL TEST corpus (synthetic) for the ingest→reconcile loop proof, read-only.
       - ./itil-test-corpus:/data/itil:ro
+      # Slice-1 sample-operation corpora the commission step LEARNS from (read-only, TEST DATA).
+      - ./corpus:/data/corpus:ro
+      # DEV-ONLY: the contract-faithful FAKE MCP servers (TEST DATA) so the local stack can run
+      # the Slice-1 validate-the-signal proof without a real monitoring endpoint. Not in prod.
+      - ./tests/fake_mcp:/app/tests/fake_mcp:ro
     deploy:
       replicas: 3
 

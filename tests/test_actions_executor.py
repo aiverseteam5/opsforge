@@ -256,3 +256,41 @@ async def test_destructive_action_never_auto_executes_via_policy():
 
     decision = effective_trust("destructive", "k.del", {"k.del": "auto_with_notify"})
     assert decision == "awaiting_approval"
+
+
+async def test_undo_resolves_templated_rollback_from_forward_result():
+    """D2: a rollback declared with ${params.*}/${result.*} tokens (the triage skill's pattern) is
+    resolved at undo-time from the forward action's params + CAPTURED result, so the rollback runs
+    with real args — the prior interval the forward call returned — instead of erroring on empty
+    params. Proves reversibility end-to-end through the executor + connector; the live proof can't,
+    because its triage action gates and never executes."""
+    async with session_factory().begin() as s:
+        await s.execute(text("DELETE FROM connectors WHERE kind='monitoring'"))
+        await s.execute(
+            text("INSERT INTO connectors (org_id,name,kind,transport,endpoint,tool_allowlist,"
+                 "environment,status) VALUES (:o,'mon (TEST)','monitoring','stdio',:e,"
+                 "CAST(:a AS jsonb),'non_prod','healthy')"),
+            {"o": DEFAULT_ORG_ID, "e": server_command("monitoring"),
+             "a": json.dumps(["get_service_status", "set_pull_interval", "verify_credential"])})
+    rb = {"tool": "monitoring.set_pull_interval",
+          "params": {"service": "${params.service}", "seconds": "${result.old_interval_seconds}"}}
+    async with session_factory().begin() as s:
+        aid = (await s.execute(
+            text("INSERT INTO actions (org_id,action_class,tool,params,target_ref,rollback,state,"
+                 "policy_trace) VALUES (:o,'reversible','monitoring.set_pull_interval',"
+                 "CAST(:p AS jsonb),'svc://checkout-svc',CAST(:rb AS jsonb),'approved',"
+                 "CAST(:tr AS jsonb)) RETURNING id"),
+            {"o": DEFAULT_ORG_ID, "p": json.dumps({"service": "checkout-svc", "seconds": 60}),
+             "rb": json.dumps(rb), "tr": json.dumps({"allowed": True})})).scalar_one()
+    try:
+        res = await execute_action(aid, DEFAULT_ORG_ID)
+        assert res["state"] == "succeeded"
+        assert res["result"]["old_interval_seconds"] == 300  # the prior interval, captured
+        # undo runs the rollback with RESOLVED params (service=checkout-svc, seconds=300) and
+        # SUCCEEDS — with the old empty-params rollback it would error on the missing required args
+        undo = await undo_action(aid, actor=f"user:{uuid.uuid4()}", org_id=DEFAULT_ORG_ID)
+        assert undo["state"] == "rolled_back"
+    finally:
+        async with session_factory().begin() as s:
+            await s.execute(text("DELETE FROM actions WHERE id=:i"), {"i": aid})
+            await s.execute(text("DELETE FROM connectors WHERE kind='monitoring'"))

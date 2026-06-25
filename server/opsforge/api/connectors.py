@@ -27,7 +27,7 @@ router = APIRouter(prefix="/api/v1/connectors", tags=["connectors"])
 
 ConnectorKind = Literal[
     "aws", "kubernetes", "datadog", "servicenow", "jira", "pagerduty", "slack",
-    "confluence", "custom",
+    "confluence", "monitoring", "custom",
 ]
 
 

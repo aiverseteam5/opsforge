@@ -41,7 +41,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 # --------------------------------------------------------------------------- #
 UserRole = Literal["admin", "operator", "viewer"]
 ConnectorKind = Literal[
-    "aws", "kubernetes", "datadog", "servicenow", "jira", "pagerduty", "slack", "custom"
+    "aws", "kubernetes", "datadog", "servicenow", "jira", "pagerduty", "slack",
+    "confluence", "monitoring", "custom"
 ]
 ConnectorTransport = Literal["stdio", "http"]
 SkillSource = Literal["builtin", "org", "codified"]
@@ -53,7 +54,8 @@ RunEventKind = Literal[
     "thought", "tool_call", "tool_result", "evidence", "proposal", "report", "error"
 ]
 JobKind = Literal[
-    "noop", "run_agent", "graph_sync", "execute_action", "ingest", "reconcile", "ingest_tickets"
+    "noop", "run_agent", "graph_sync", "execute_action", "ingest", "ingest_knowledge",
+    "reconcile", "ingest_tickets", "commission"
 ]
 JobStatus = Literal["queued", "running", "done", "failed"]
 ActionClass = Literal["read_only", "reversible", "destructive"]
@@ -162,7 +164,7 @@ class Connector(PkMixin, OrgMixin, Base):
             "kind",
             (
                 "aws", "kubernetes", "datadog", "servicenow", "jira",
-                "pagerduty", "slack", "confluence", "custom",
+                "pagerduty", "slack", "confluence", "monitoring", "custom",
             ),
             "kind",
         ),

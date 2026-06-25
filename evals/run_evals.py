@@ -160,6 +160,22 @@ def _check_assertions(
     return checks
 
 
+async def _seed_knowledge(org_id: str, corpus: str | None, process_key: str | None) -> None:
+    """Honor a scenario's `fixtures.knowledge`: LEARN the operation before the run by ingesting
+    the named corpus then reconciling + generating its validated process — the same M6 path the
+    commission step uses, so an LLM-keyed triage eval actually has the process it must consult
+    (rather than the fixture being silently ignored)."""
+    if not corpus or not process_key:
+        return
+    from opsforge.ingest import configured_embedder, ingest_directory
+    from opsforge.processes import configured_drafter, generate_process
+    from opsforge.reconcile import configured_detector, reconcile_process
+
+    await ingest_directory(_ROOT / corpus, org_id=org_id, embedder=configured_embedder())
+    await reconcile_process(org_id, process_key, detector=await configured_detector(org_id))
+    await generate_process(org_id, process_key, drafter=configured_drafter())
+
+
 async def run_scenario(
     skill_slug: str, scenario: dict[str, Any], gateway: ModelGateway, model: str
 ) -> dict[str, Any]:
@@ -183,6 +199,10 @@ async def run_scenario(
 
     if fixtures.get("change"):
         await _seed_change(org_id, k8s_connector_id, fixtures["change"])
+
+    if fixtures.get("knowledge"):
+        kn = fixtures["knowledge"]
+        await _seed_knowledge(org_id, kn.get("corpus"), kn.get("process_key"))
 
     run_id = await _create_run(org_id, skill["id"], scenario["trigger"])
     await run_agent(__import__("uuid").UUID(run_id), skill, gateway, model=model)
@@ -229,6 +249,13 @@ async def _amain(skill_slug: str, model: str, demo: bool) -> int:
 
     scorecard = []
     for scenario in _load_scenarios(skill_slug):
+        if demo and scenario.get("requires_llm"):
+            # The keyless heuristic gateway is wired to the incident-investigation topology and
+            # cannot drive an arbitrary learned operation; an LLM-keyed scenario would FAIL it
+            # spuriously. Skip it (don't count it) rather than overstate the keyless scorecard.
+            print(f"[SKIP] {scenario.get('name', 'unnamed')} — requires an LLM gateway "
+                  "(not runnable under the keyless --demo heuristic)")
+            continue
         result = await run_scenario(skill_slug, scenario, gateway, model)
         scorecard.append(result)
         status = "PASS" if result["passed"] else "FAIL"

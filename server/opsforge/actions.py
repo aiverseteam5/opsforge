@@ -17,6 +17,7 @@ This is plain Python — the LLM never runs here (doctrine #3).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from uuid import UUID
 
@@ -63,7 +64,7 @@ async def _load_action(action_id: UUID, org_id: Any = None) -> dict[str, Any] | 
             await s.execute(
                 text(
                     "SELECT id, org_id, run_id, skill_id, action_class, tool, params, "
-                    "target_ref, rollback, state, policy_trace, approved_by "
+                    "target_ref, rollback, result, state, policy_trace, approved_by "
                     "FROM actions WHERE id = :id" + clause
                 ),
                 params,
@@ -181,6 +182,34 @@ async def deny_action(action_id: UUID, *, actor: str, org_id: Any = None) -> dic
     return {"state": "denied", "id": str(action_id)}
 
 
+_ROLLBACK_TOKEN = re.compile(r"\$\{(params|result)\.([A-Za-z0-9_]+)\}")
+
+
+def _resolve_rollback_params(
+    template: dict[str, Any], fwd_params: dict[str, Any], fwd_result: dict[str, Any]
+) -> tuple[dict[str, Any], bool]:
+    """Resolve ${params.X}/${result.X} tokens in a declared rollback's params from the forward
+    action's params and its captured result, so a rollback can restore prior state known only at
+    execute-time (e.g. the old interval the forward call returned). Opt-in and domain-agnostic:
+    a value with no token is returned verbatim, so existing rollbacks (params:{} / {note:...}) are
+    untouched. Returns (resolved, fully_resolved); fully_resolved is False if any referenced field
+    is absent (the caller must then NOT fire a half-built rollback — fail/skip closed)."""
+    sources = {"params": fwd_params or {}, "result": fwd_result or {}}
+    resolved: dict[str, Any] = {}
+    ok = True
+    for key, val in (template or {}).items():
+        m = _ROLLBACK_TOKEN.fullmatch(val.strip()) if isinstance(val, str) else None
+        if m is None:
+            resolved[key] = val
+            continue
+        scope, field = m.group(1), m.group(2)
+        if field in sources[scope]:
+            resolved[key] = sources[scope][field]
+        else:
+            ok = False  # referenced forward state is unavailable (e.g. the forward call failed)
+    return resolved, ok
+
+
 async def undo_action(
     action_id: UUID, *, actor: str, actor_role: str | None = None, org_id: Any = None
 ) -> dict[str, Any]:
@@ -199,6 +228,14 @@ async def undo_action(
     rollback = action.get("rollback")
     if not rollback or not rollback.get("tool"):
         raise ActionError("action has no declared rollback")
+    # Resolve any ${params.*}/${result.*} tokens from the forward action's params + captured
+    # result BEFORE claiming the state, so an under-specified rollback fails closed here rather
+    # than bouncing succeeded->rolling_back->succeeded and leaving the forward change in effect.
+    rb_params, rb_ok = _resolve_rollback_params(
+        rollback.get("params") or {}, action.get("params") or {}, action.get("result") or {}
+    )
+    if not rb_ok:
+        raise ActionError("rollback references forward state that is unavailable")
     # GAP 3 escalation: reversing a remediation needs the same role its priority demanded to
     # approve (an operator must not undo an admin-only P1 change).
     required = await _required_role(action)
@@ -218,7 +255,7 @@ async def undo_action(
     await _audit(action, actor, "action.undo_requested", detail={"via": rollback["tool"]})
     try:
         async with open_connector(connector) as cs:
-            await cs.call(rollback["tool"], rollback.get("params") or {}, run_id=action["run_id"])
+            await cs.call(rollback["tool"], rb_params, run_id=action["run_id"])
     except Exception as exc:  # noqa: BLE001 - on failure the forward action stays in effect
         await _transition(action_id, "rolling_back", "succeeded", org_id=action["org_id"])
         await _audit(action, actor, "action.undo_failed",
@@ -357,11 +394,18 @@ async def _maybe_rollback(action: dict[str, Any], connector: dict, kind: str) ->
     rollback = action.get("rollback")
     if not rollback or not rollback.get("tool"):
         return
+    rb_params, rb_ok = _resolve_rollback_params(
+        rollback.get("params") or {}, action.get("params") or {}, action.get("result") or {}
+    )
+    if not rb_ok:
+        # The forward call failed before producing the state the rollback needs (e.g. the prior
+        # interval) — there is nothing coherent to revert to. Skip closed and record it.
+        await _audit(action, "system:executor", "action.rollback_skipped",
+                     detail={"reason": "rollback references unavailable forward state"})
+        return
     try:
         async with open_connector(connector) as cs:
-            await cs.call(
-                rollback["tool"], rollback.get("params") or {}, run_id=action["run_id"]
-            )
+            await cs.call(rollback["tool"], rb_params, run_id=action["run_id"])
         await _transition(action["id"], "failed", "rolled_back", org_id=action["org_id"])
         await _audit(
             action, "system:executor", "action.rolled_back",
