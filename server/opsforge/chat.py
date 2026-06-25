@@ -127,10 +127,30 @@ async def add_turn(
     raise last  # type: ignore[misc]
 
 
+def _action_view(r: Any) -> dict[str, Any]:
+    """A legible, safe view of an action for the chat thread (G4): what the agent did, its
+    decision, and WHY — never the raw params/credentials. `awaiting` drives inline approve/
+    deny; `undoable` drives the undo button."""
+    trace = r.policy_trace or {}
+    state = r.state
+    return {
+        "id": str(r.id),
+        "tool": r.tool,
+        "target_ref": r.target_ref,
+        "action_class": r.action_class,
+        "state": state,
+        "reason": trace.get("reason"),
+        "auto_executed": bool(trace.get("auto_execute")),
+        "awaiting": state in ("awaiting_approval", "dry_run_done"),
+        "undoable": state == "succeeded" and r.action_class == "reversible"
+        and bool(r.rollback and r.rollback.get("tool")),
+    }
+
+
 async def get_messages(org_id: Any, conversation_id: UUID) -> list[dict[str, Any]]:
     """The thread, oldest first. Assistant messages carry their run's live status + report
-    (the streamed work itself lives in run_events). The run is reachable ONLY via an
-    RLS-scoped message, so a caller can only ever see their own workspace's runs here."""
+    AND the actions that run produced (G4 legibility), each reachable ONLY via an RLS-scoped
+    message — a caller only ever sees their own workspace's runs and actions here."""
     async with session_factory().begin() as s:
         await scope_to_org(s, org_id)
         rows = (
@@ -144,6 +164,21 @@ async def get_messages(org_id: Any, conversation_id: UUID) -> list[dict[str, Any
                 {"o": str(org_id), "c": str(conversation_id)},
             )
         ).all()
+        run_ids = [str(r.run_id) for r in rows if r.run_id and r.role == "assistant"]
+        actions_by_run: dict[str, list[dict[str, Any]]] = {}
+        if run_ids:
+            arows = (
+                await s.execute(
+                    text(
+                        "SELECT id, run_id, tool, target_ref, action_class, state, "
+                        "policy_trace, rollback FROM actions "
+                        "WHERE org_id = :o AND run_id = ANY(:runs) ORDER BY created_at"
+                    ),
+                    {"o": str(org_id), "runs": run_ids},
+                )
+            ).all()
+            for ar in arows:
+                actions_by_run.setdefault(str(ar.run_id), []).append(_action_view(ar))
     return [
         {
             "id": str(r.id), "role": r.role, "content": r.content,
@@ -152,6 +187,7 @@ async def get_messages(org_id: Any, conversation_id: UUID) -> list[dict[str, Any
             "run_status": r.run_status,
             "report": r.report_json,
             "report_md": r.report_md,
+            "actions": actions_by_run.get(str(r.run_id)) if r.run_id else None,
         }
         for r in rows
     ]

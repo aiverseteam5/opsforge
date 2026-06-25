@@ -44,6 +44,37 @@ describe("the chat surface", () => {
     expect(screen.getByText(/confidence: low/i)).toBeInTheDocument();
   });
 
+  it("surfaces the agent's actions legibly: gated → approve, executed reversible → undo", async () => {
+    mockApi.listConversations = vi.fn().mockResolvedValue([{ id: "c1", title: "Ops", created_at: "x" }]);
+    mockApi.getChatMessages = vi.fn().mockResolvedValue([
+      { id: "m2", role: "assistant", content: "", run_id: "r1", seq: 1, created_at: "x",
+        run_status: "done",
+        report: { hypothesis: "Handled the deploy.", confidence: "high", evidence: [] },
+        actions: [
+          { id: "a1", tool: "kubernetes.delete_namespace", target_ref: "svc://prod",
+            action_class: "destructive", state: "awaiting_approval",
+            reason: "trust=awaiting_approval; gated:production", auto_executed: false,
+            awaiting: true, undoable: false },
+          { id: "a2", tool: "kubernetes.rollback_deploy", target_ref: "svc://staging",
+            action_class: "reversible", state: "succeeded", reason: "auto:reversible_safe",
+            auto_executed: true, awaiting: false, undoable: true },
+        ] },
+    ]);
+    mockApi.approveAction = vi.fn().mockResolvedValue({});
+    mockApi.undoAction = vi.fn().mockResolvedValue({});
+    const { container } = renderPage(<Chat />);
+    // a consequential action is shown gated, with WHY, and an inline approve
+    expect(await screen.findByText(/kubernetes\.delete_namespace/)).toBeInTheDocument();
+    expect(screen.getByText(/awaiting your approval/i)).toBeInTheDocument();
+    // an auto-executed reversible action is shown with an undo
+    expect(screen.getByText(/auto-executed/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+    await waitFor(() => expect(mockApi.approveAction).toHaveBeenCalledWith("a1"));
+    fireEvent.click(screen.getByRole("button", { name: /^undo$/i }));
+    await waitFor(() => expect(mockApi.undoAction).toHaveBeenCalledWith("a2"));
+    expect(container.innerHTML).not.toMatch(/credential|api_key|sk-/i);
+  });
+
   it("sending a message calls the API and never sends a credential anywhere visible", async () => {
     mockApi.listConversations = vi.fn().mockResolvedValue([{ id: "c1", title: "Ops", created_at: "x" }]);
     mockApi.getChatMessages = vi.fn().mockResolvedValue([]);

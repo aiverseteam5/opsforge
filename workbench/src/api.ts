@@ -153,10 +153,17 @@ export interface CatalogDetail extends CatalogConnector {
 
 // ---- G1: the chat agent surface ----------------------------------------
 export interface ChatConversation { id: string; title: string; created_at: string }
+// G4: a legible view of an action the agent's run produced (no raw params/credentials).
+export interface ChatAction {
+  id: string; tool: string; target_ref: string | null; action_class: string;
+  state: string; reason: string | null; auto_executed: boolean;
+  awaiting: boolean; undoable: boolean;
+}
 export interface ChatMessage {
   id: string; role: "user" | "assistant" | "system"; content: string;
   run_id: string | null; seq: number; created_at: string;
   run_status?: string | null; report?: any; report_md?: string | null;
+  actions?: ChatAction[] | null;
 }
 
 // ---- endpoints ---------------------------------------------------------
@@ -209,6 +216,7 @@ export const api = {
   approveAction: (id: string) => req(`/actions/${id}/approve`, { method: "POST" }),
   dryRunAction: (id: string) => req<{ plan: any }>(`/actions/${id}/dry-run`, { method: "POST" }),
   denyAction: (id: string) => req(`/actions/${id}/deny`, { method: "POST" }),
+  undoAction: (id: string) => req(`/actions/${id}/undo`, { method: "POST" }),
 
   // ---- M8 knowledge loop ----
   listChunks: (process_key?: string) =>

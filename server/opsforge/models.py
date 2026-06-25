@@ -66,6 +66,7 @@ ActionState = Literal[
     "executing",
     "succeeded",
     "failed",
+    "rolling_back",
     "rolled_back",
 ]
 FeedbackVerdict = Literal["accepted", "edited", "ignored"]
@@ -305,6 +306,7 @@ class Action(PkMixin, OrgMixin, Base):
                 "executing",
                 "succeeded",
                 "failed",
+                "rolling_back",
                 "rolled_back",
             ),
             "state",

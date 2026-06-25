@@ -231,3 +231,61 @@ async def test_report_is_redacted_in_the_thread():
         async with session_factory().begin() as s:
             await s.execute(text("DELETE FROM runs WHERE org_id=:o"), {"o": org})
         await _cleanup_org(org)
+
+
+# --------------------------------------------------------------------------- #
+# G4 legibility: get_messages surfaces the run's actions (legible, no leak)
+# --------------------------------------------------------------------------- #
+async def test_get_messages_surfaces_run_actions():
+    from opsforge.db import scope_to_org, session_factory
+
+    org = str(uuid.uuid4())
+    try:
+        conv = await chat.create_conversation(org)
+        cid = uuid.UUID(conv["id"])
+        run_id = str(uuid.uuid4())
+        await chat.add_message(org, cid, role="user", content="roll it back")
+        await chat.add_message(org, cid, role="assistant", content="", run_id=run_id)
+        async with session_factory().begin() as s:
+            await scope_to_org(s, org)
+            await s.execute(
+                text("INSERT INTO runs (id, org_id, status, trigger) "
+                     "VALUES (:r,:o,'done',CAST('{}' AS jsonb))"), {"r": run_id, "o": org})
+            await s.execute(
+                text("INSERT INTO actions (org_id, run_id, action_class, tool, target_ref, "
+                     "rollback, state, policy_trace) VALUES (:o,:r,'reversible',"
+                     "'kubernetes.deploy_x','svc://x',CAST(:rb AS jsonb),'awaiting_approval',"
+                     "CAST(:tr AS jsonb))"),
+                {"o": org, "r": run_id, "rb": json.dumps({"tool": "kubernetes.redeploy_secret"}),
+                 "tr": json.dumps({"reason": "trust=awaiting_approval; gated:production",
+                                   "auto_execute": False})})
+            await s.execute(
+                text("INSERT INTO actions (org_id, run_id, action_class, tool, target_ref, "
+                     "rollback, state, policy_trace) VALUES (:o,:r,'reversible',"
+                     "'kubernetes.scale_x','svc://y',CAST(:rb AS jsonb),'succeeded',"
+                     "CAST(:tr AS jsonb))"),
+                {"o": org, "r": run_id, "rb": json.dumps({"tool": "kubernetes.scaleback_secret"}),
+                 "tr": json.dumps({"reason": "auto:reversible_safe", "auto_execute": True})})
+
+        msgs = await chat.get_messages(org, cid)
+        amsg = next(m for m in msgs if m["role"] == "assistant")
+        acts = amsg["actions"]
+        assert acts is not None and len(acts) == 2
+        gated = next(a for a in acts if a["tool"] == "kubernetes.deploy_x")
+        assert gated["awaiting"] is True and gated["undoable"] is False
+        assert "production" in (gated["reason"] or "")
+        done = next(a for a in acts if a["tool"] == "kubernetes.scale_x")
+        assert done["undoable"] is True and done["auto_executed"] is True
+        assert done["awaiting"] is False
+        # the view never leaks the rollback internals (tool/params)
+        blob = json.dumps(acts)
+        assert "redeploy_secret" not in blob and "scaleback_secret" not in blob
+
+        # workspace isolation: another org sees nothing of this thread
+        assert await chat.get_messages(str(uuid.uuid4()), cid) == []
+    finally:
+        async with session_factory().begin() as s:
+            await scope_to_org(s, org)
+            await s.execute(text("DELETE FROM actions WHERE org_id=:o"), {"o": org})
+            await s.execute(text("DELETE FROM runs WHERE org_id=:o"), {"o": org})
+        await _cleanup_org(org)

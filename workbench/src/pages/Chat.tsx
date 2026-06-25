@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ChatMessage } from "../api";
+import { api, ChatAction, ChatMessage } from "../api";
 import { streamRunEvents, StreamEvent } from "../sse";
 import { Empty, ErrorState, Loading, PageHeader } from "../components/ui";
 
@@ -67,7 +67,7 @@ function Thread({ convId, draft, setDraft }: {
         {messages.isLoading ? <Loading what="messages" />
           : messages.isError ? <ErrorState error={messages.error} />
           : msgs.length === 0 ? <Empty>Say hello — ask what’s inconsistent in your processes.</Empty>
-          : msgs.map((m) => <Bubble key={m.id} m={m} />)}
+          : msgs.map((m) => <Bubble key={m.id} m={m} convId={convId} />)}
         <div ref={bottom} />
       </div>
       <form className="mt-2 flex gap-2"
@@ -83,14 +83,66 @@ function Thread({ convId, draft, setDraft }: {
   );
 }
 
-function Bubble({ m }: { m: ChatMessage }) {
+function Bubble({ m, convId }: { m: ChatMessage; convId: string }) {
   const mine = m.role === "user";
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
       <div className={`max-w-[75%] rounded-lg px-3 py-2 text-sm ${
         mine ? "bg-sky-900/40 text-sky-100" : "card"}`}>
-        {mine ? m.content : <AssistantBody m={m} />}
+        {mine ? m.content : <AssistantBody m={m} convId={convId} />}
       </div>
+    </div>
+  );
+}
+
+// G4: a legible state line for an action the agent took (or proposed).
+function stateLabel(a: ChatAction): string {
+  if (a.awaiting) return "⏸ awaiting your approval";
+  if (a.state === "succeeded") return a.auto_executed ? "✓ auto-executed" : "✓ executed";
+  if (a.state === "rolled_back") return "↩ undone";
+  if (a.state === "rolling_back") return "↩ undoing…";
+  if (a.state === "denied") return "✕ denied";
+  if (a.state === "failed") return "⚠ failed";
+  return a.state;
+}
+
+// G4 "legible & reversible": each action the agent took shows WHAT it did, the decision +
+// WHY, and — only where the deterministic engine allows — inline approve/deny (gated) or
+// undo (an executed reversible action). The buttons call the SAME action endpoints the
+// approval gate uses; the surface cannot fabricate a state.
+function ActionCard({ a, convId }: { a: ChatAction; convId: string }) {
+  const qc = useQueryClient();
+  const refresh = () => qc.invalidateQueries({ queryKey: ["messages", convId] });
+  const approve = useMutation({ mutationFn: () => api.approveAction(a.id), onSuccess: refresh });
+  const deny = useMutation({ mutationFn: () => api.denyAction(a.id), onSuccess: refresh });
+  const undo = useMutation({ mutationFn: () => api.undoAction(a.id), onSuccess: refresh });
+  const busy = approve.isPending || deny.isPending || undo.isPending;
+  const err = approve.error || deny.error || undo.error;
+  const tone = a.awaiting ? "border-amber-500 bg-amber-950/20"
+    : a.state === "rolled_back" || a.state === "denied" ? "border-zinc-600 bg-zinc-900/40"
+    : a.state === "failed" ? "border-rose-600 bg-rose-950/20"
+    : "border-sky-600 bg-sky-950/20";
+  return (
+    <div className={`rounded-md border-l-2 px-3 py-2 text-xs ${tone}`}>
+      <div className="flex items-center justify-between gap-2">
+        <code className="text-sky-300">{a.tool}</code>
+        <span className="chip border-edge text-[10px]">{a.action_class}</span>
+      </div>
+      {a.target_ref && <div className="text-muted">target: {a.target_ref}</div>}
+      <div className="mt-1">
+        <span className="font-semibold">{stateLabel(a)}</span>
+        {a.reason && <span className="text-muted"> — {a.reason}</span>}
+      </div>
+      {a.awaiting && (
+        <div className="mt-2 flex gap-2">
+          <button className="btn" disabled={busy} onClick={() => approve.mutate()}>Approve</button>
+          <button className="btn" disabled={busy} onClick={() => deny.mutate()}>Deny</button>
+        </div>
+      )}
+      {a.undoable && (
+        <button className="btn mt-2" disabled={busy} onClick={() => undo.mutate()}>Undo</button>
+      )}
+      {err && <div className="mt-1 text-rose-300">{String(err)}</div>}
     </div>
   );
 }
@@ -101,10 +153,11 @@ const TERMINAL_RUN_STATUS = ["done", "failed", "cancelled"];
 
 // The assistant turn streams the agent's run events live, then settles on the report
 // (answer + evidence + confidence). Legible: you see what it did and the basis for it.
-function AssistantBody({ m }: { m: ChatMessage }) {
+function AssistantBody({ m, convId }: { m: ChatMessage; convId: string }) {
   const [events, setEvents] = useState<StreamEvent[]>([]);
   const [done, setDone] = useState(TERMINAL_RUN_STATUS.includes(m.run_status ?? ""));
   const report = m.report;
+  const actions = m.actions ?? [];
 
   useEffect(() => {
     if (!m.run_id || done) return;
@@ -112,6 +165,13 @@ function AssistantBody({ m }: { m: ChatMessage }) {
       () => setDone(true));
     return stop;
   }, [m.run_id, done]);
+
+  const actionsBlock = actions.length > 0 && (
+    <div className="mt-3 space-y-2">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Actions</div>
+      {actions.map((a) => <ActionCard key={a.id} a={a} convId={convId} />)}
+    </div>
+  );
 
   if (report?.hypothesis) {
     return (
@@ -134,6 +194,7 @@ function AssistantBody({ m }: { m: ChatMessage }) {
             </ul>
           </details>
         )}
+        {actionsBlock}
       </div>
     );
   }
@@ -147,6 +208,7 @@ function AssistantBody({ m }: { m: ChatMessage }) {
               : (ev.data?.thought ?? ev.data?.tool ?? JSON.stringify(ev.data)).toString().slice(0, 140)}
           </div>
         ))}
+      {actionsBlock}
     </div>
   );
 }

@@ -13,6 +13,7 @@ from ..actions import (
     approve_action,
     deny_action,
     dry_run_action,
+    undo_action,
 )
 from ..db import session_factory
 from ..security import Principal, require_token
@@ -72,7 +73,8 @@ async def approve(action_id: UUID, principal: Principal = Depends(require_token)
         raise HTTPException(status_code=403, detail="approval requires admin or operator")
     try:
         return await approve_action(
-            action_id, actor_role=principal.role, actor=_actor(principal)
+            action_id, actor_role=principal.role, actor=_actor(principal),
+            org_id=principal.org_id,
         )
     except ActionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -81,7 +83,7 @@ async def approve(action_id: UUID, principal: Principal = Depends(require_token)
 @router.post("/{action_id}/dry-run")
 async def dry_run(action_id: UUID, principal: Principal = Depends(require_token)):
     try:
-        return await dry_run_action(action_id, actor=_actor(principal))
+        return await dry_run_action(action_id, actor=_actor(principal), org_id=principal.org_id)
     except ActionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -91,6 +93,20 @@ async def deny(action_id: UUID, principal: Principal = Depends(require_token)):
     if principal.role not in _APPROVER_ROLES:
         raise HTTPException(status_code=403, detail="deny requires admin or operator")
     try:
-        return await deny_action(action_id, actor=_actor(principal))
+        return await deny_action(action_id, actor=_actor(principal), org_id=principal.org_id)
+    except ActionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/{action_id}/undo")
+async def undo(action_id: UUID, principal: Principal = Depends(require_token)):
+    """Reverse a succeeded reversible action (G4) — run its declared rollback."""
+    if principal.role not in _APPROVER_ROLES:
+        raise HTTPException(status_code=403, detail="undo requires admin or operator")
+    try:
+        return await undo_action(
+            action_id, actor=_actor(principal), actor_role=principal.role,
+            org_id=principal.org_id,
+        )
     except ActionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

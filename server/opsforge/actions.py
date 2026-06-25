@@ -33,6 +33,11 @@ _TRANSITIONS: dict[str, set[str]] = {
     "approved": {"executing"},
     "executing": {"succeeded", "failed"},
     "failed": {"rolled_back"},
+    # G4 undo: a succeeded reversible action can be reversed. The claim (rolling_back) is
+    # atomic so a double-undo cannot run the rollback twice; a failed rollback returns to
+    # succeeded (the forward action is still in effect).
+    "succeeded": {"rolling_back"},
+    "rolling_back": {"rolled_back", "succeeded"},
 }
 
 _APPROVER_ROLES = {"admin", "operator"}
@@ -42,16 +47,23 @@ class ActionError(RuntimeError):
     pass
 
 
-async def _load_action(action_id: UUID) -> dict[str, Any] | None:
+async def _load_action(action_id: UUID, org_id: Any = None) -> dict[str, Any] | None:
+    """Load an action. When `org_id` is given the load is workspace-scoped (a foreign-org
+    action returns None — fail-closed), so a human-driven transition can never reach across
+    workspaces by raw id. The worker's executor passes None (its org comes from the job)."""
+    clause = "" if org_id is None else " AND org_id = :org"
+    params: dict[str, Any] = {"id": action_id}
+    if org_id is not None:
+        params["org"] = str(org_id)
     async with session_factory().begin() as s:
         row = (
             await s.execute(
                 text(
                     "SELECT id, org_id, run_id, skill_id, action_class, tool, params, "
                     "target_ref, rollback, state, policy_trace, approved_by "
-                    "FROM actions WHERE id = :id"
+                    "FROM actions WHERE id = :id" + clause
                 ),
-                {"id": action_id},
+                params,
             )
         ).first()
     return dict(row._mapping) if row else None
@@ -113,10 +125,12 @@ def _require_policy_trace(action: dict[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 # Human-driven transitions (called from the API)
 # --------------------------------------------------------------------------- #
-async def approve_action(action_id: UUID, *, actor_role: str | None, actor: str) -> dict[str, Any]:
+async def approve_action(
+    action_id: UUID, *, actor_role: str | None, actor: str, org_id: Any = None
+) -> dict[str, Any]:
     if actor_role not in _APPROVER_ROLES:
         raise ActionError("approval requires role admin or operator")
-    action = await _load_action(action_id)
+    action = await _load_action(action_id, org_id)
     if action is None:
         raise ActionError("action not found")
     _require_policy_trace(action)
@@ -149,8 +163,8 @@ async def approve_action(action_id: UUID, *, actor_role: str | None, actor: str)
     return {"state": "approved", "id": str(action_id)}
 
 
-async def deny_action(action_id: UUID, *, actor: str) -> dict[str, Any]:
-    action = await _load_action(action_id)
+async def deny_action(action_id: UUID, *, actor: str, org_id: Any = None) -> dict[str, Any]:
+    action = await _load_action(action_id, org_id)
     if action is None:
         raise ActionError("action not found")
     if not await _transition(action_id, action["state"], "denied"):
@@ -159,9 +173,57 @@ async def deny_action(action_id: UUID, *, actor: str) -> dict[str, Any]:
     return {"state": "denied", "id": str(action_id)}
 
 
-async def dry_run_action(action_id: UUID, *, actor: str) -> dict[str, Any]:
+async def undo_action(
+    action_id: UUID, *, actor: str, actor_role: str | None = None, org_id: Any = None
+) -> dict[str, Any]:
+    """Reverse a SUCCEEDED reversible action by running its declared rollback (the Cursor
+    'undo'). Workspace-scoped (a foreign-org action is not found) and role-gated exactly like
+    approve, including the priority escalation. Operator-initiated and audited. The claim
+    (succeeded -> rolling_back) is atomic, so a concurrent double-undo cannot run the rollback
+    twice; on success -> rolled_back, on failure -> succeeded (still in effect)."""
+    action = await _load_action(action_id, org_id)
+    if action is None:
+        raise ActionError("action not found")
+    if action["state"] != "succeeded":
+        raise ActionError(f"can only undo a succeeded action; this is {action['state']}")
+    if action.get("action_class") != "reversible":
+        raise ActionError("only reversible actions can be undone")
+    rollback = action.get("rollback")
+    if not rollback or not rollback.get("tool"):
+        raise ActionError("action has no declared rollback")
+    # GAP 3 escalation: reversing a remediation needs the same role its priority demanded to
+    # approve (an operator must not undo an admin-only P1 change).
+    required = await _required_role(action)
+    from .policy import role_allows
+
+    if not role_allows(actor_role, required):
+        raise ActionError(f"this priority requires role {required} to undo")
+    kind = action["tool"].split(".", 1)[0]
+    by_kind = await load_connectors_by_kind(action["org_id"])
+    connector = by_kind.get(kind)
+    if connector is None:
+        raise ActionError(f"no connector for kind {kind}")
+
+    # Atomic claim — a concurrent undo loses the race and never re-runs the rollback.
+    if not await _transition(action_id, "succeeded", "rolling_back"):
+        raise ActionError("undo race lost; action state changed")
+    await _audit(action, actor, "action.undo_requested", detail={"via": rollback["tool"]})
+    try:
+        async with open_connector(connector) as cs:
+            await cs.call(rollback["tool"], rollback.get("params") or {}, run_id=action["run_id"])
+    except Exception as exc:  # noqa: BLE001 - on failure the forward action stays in effect
+        await _transition(action_id, "rolling_back", "succeeded")
+        await _audit(action, actor, "action.undo_failed",
+                     detail={"error": str(redact(str(exc)))})
+        raise ActionError(f"rollback failed: {redact(str(exc))}") from exc
+    await _transition(action_id, "rolling_back", "rolled_back")
+    await _audit(action, actor, "action.undone", detail={"via": rollback["tool"]})
+    return {"state": "rolled_back", "id": str(action_id)}
+
+
+async def dry_run_action(action_id: UUID, *, actor: str, org_id: Any = None) -> dict[str, Any]:
     """Render the exact tool + params + target WITHOUT calling any mutating tool."""
-    action = await _load_action(action_id)
+    action = await _load_action(action_id, org_id)
     if action is None:
         raise ActionError("action not found")
     _require_policy_trace(action)
