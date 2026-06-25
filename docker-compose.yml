@@ -61,6 +61,9 @@ services:
       retries: 10
     ports:
       - "8080:8080"
+    volumes:
+      # Realistic ITIL TEST corpus (synthetic) for the ingest→reconcile loop proof, read-only.
+      - ./itil-test-corpus:/data/itil:ro
 
   worker:
     build: .
@@ -72,6 +75,9 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    volumes:
+      # Realistic ITIL TEST corpus (synthetic) for the ingest→reconcile loop proof, read-only.
+      - ./itil-test-corpus:/data/itil:ro
     deploy:
       replicas: 3
 
