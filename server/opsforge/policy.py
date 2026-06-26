@@ -51,6 +51,17 @@ def role_allows(actor_role: str | None, required_role: str | None) -> bool:
     return _ROLE_RANK.get(actor_role or "", -1) >= _ROLE_RANK.get(required_role, 99)
 
 
+def case_budget(manifest: dict[str, Any]) -> int:
+    """Max number of runs in one iterative-remediation case (Slice 2). The chain hook spawns a
+    follow-up run only while the NEXT step is < this, so the iterate loop is hard-bounded and can
+    never run away. Pure; reads the skill manifest's policy.max_case_steps (default 3, floor 1)."""
+    try:
+        n = int((manifest.get("policy") or {}).get("max_case_steps", 3))
+    except (TypeError, ValueError):
+        n = 3
+    return max(1, n)
+
+
 def effective_trust(
     action_class: str,
     tool_fqn: str,

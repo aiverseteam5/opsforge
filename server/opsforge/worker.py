@@ -24,7 +24,14 @@ from sqlalchemy import text
 
 from .config import get_settings
 from .connectors import load_connector
-from .db import claim_jobs, complete_job, fail_job, scope_to_org, session_factory
+from .db import (
+    claim_jobs,
+    complete_job,
+    fail_job,
+    record_audit,
+    scope_to_org,
+    session_factory,
+)
 from .graph import sync_connector
 
 logger = logging.getLogger("opsforge.worker")
@@ -80,7 +87,8 @@ async def handle_run_agent(payload: dict[str, Any]) -> None:
 
 
 async def handle_execute_action(payload: dict[str, Any]) -> None:
-    """Execute an approved action through the deterministic executor (Phase 2)."""
+    """Execute an approved action through the deterministic executor (Phase 2), then — Slice 2 —
+    chain a follow-up run so the agent can OBSERVE the executed result and continue the case."""
     from .actions import execute_action
 
     action_id = payload.get("action_id")
@@ -88,7 +96,131 @@ async def handle_execute_action(payload: dict[str, Any]) -> None:
         raise ValueError("execute_action job missing action_id")
     # payload["org_id"] is the authoritative job org the claim loop stamped (RLS-validated) —
     # the FORCE-RLS actions table needs it set so the restricted role can see the row.
-    await execute_action(UUID(action_id), payload.get("org_id"))
+    org_id = payload.get("org_id")
+    result = await execute_action(UUID(action_id), org_id)
+    # Slice 2: iterate the case. The chain hook lives in the worker (the composition root above the
+    # import layers) so the engine layers stay free of it; it never auto-acts (it enqueues an
+    # investigation, so every consequential next move re-gates). ISOLATED in try/except: the execute
+    # already SUCCEEDED and is non-idempotent, so a transient hook fault must NOT propagate and
+    # re-deliver the job (a retry would re-enter the executor and dead-letter). Mirrors notify_run.
+    try:
+        await _maybe_chain_followup(UUID(action_id), org_id, (result or {}).get("state"))
+    except Exception:  # noqa: BLE001 - the execution is done + audited; never poison the job
+        logger.warning("chain follow-up failed for action %s", action_id, exc_info=True)
+
+
+async def _maybe_chain_followup(action_id: UUID, org_id: Any, state: str | None) -> None:
+    """Slice 2 KEYSTONE — after an action SUCCEEDS, spawn ONE follow-up run seeded with the executed
+    result so the agent OBSERVES it and continues the case. Conservative by design: chains only on
+    success (a failed/rolled-back remediation ends the case for a human, never auto-iterates), is
+    bounded by the per-case budget (TOTAL runs in the case, so a multi-proposal run cannot branch
+    past it), idempotent (one follow-up per action), and NEVER approves or executes — it enqueues an
+    investigation, so the next consequential move re-gates."""
+    if state != "succeeded":
+        return
+    from . import dispatch
+    from .policy import case_budget
+    from .skills import get_skill_by_id
+
+    async with session_factory().begin() as s:
+        # actions is FORCE-RLS (the GUC gates it); runs has NO RLS, so EVERY runs query here carries
+        # an explicit AND org_id = :o — that predicate is the only org guard on runs, never drop it.
+        await scope_to_org(s, org_id)
+        row = (
+            await s.execute(
+                text(
+                    "SELECT a.run_id, a.tool, a.state, a.target_ref, a.result, "
+                    "r.skill_id, r.trigger, r.case_id, r.case_step "
+                    "FROM actions a JOIN runs r ON r.id = a.run_id "
+                    "WHERE a.id = :aid AND a.org_id = :o AND r.org_id = :o"
+                ),
+                {"aid": str(action_id), "o": str(org_id)},
+            )
+        ).first()
+    if row is None:
+        return  # foreign-org / runless action → nothing to continue (fail-closed)
+    m = row._mapping
+    skill_id = m["skill_id"]
+    if not skill_id:
+        return  # no skill → no manifest → cannot continue a case
+    skill = await get_skill_by_id(skill_id)
+    budget = case_budget((skill or {}).get("manifest") or {})
+
+    parent_run_id = m["run_id"]
+    root_case_id = m["case_id"] or parent_run_id  # R0 has no case_id yet → it IS the case root
+    next_step = (m["case_step"] if m["case_step"] is not None else 0) + 1
+
+    # Budget the CASE by its TOTAL run count (not one chain's depth), so the documented "max runs in
+    # one case" holds even if a run proposes more than one action (which branches the case).
+    async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
+        runs_in_case = (
+            await s.execute(
+                text(
+                    "SELECT count(*) FROM runs WHERE org_id = :o "
+                    "AND (case_id = CAST(:root AS uuid) OR id = CAST(:root AS uuid))"
+                ),
+                {"o": str(org_id), "root": str(root_case_id)},
+            )
+        ).scalar_one()
+    if runs_in_case >= budget:
+        await record_audit(
+            org_id, "system:followup", "case.budget_exhausted", subject_ref=str(root_case_id),
+            detail={"action_id": str(action_id), "runs_in_case": runs_in_case,
+                    "max_case_steps": budget},
+        )
+        return
+
+    async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
+        # Idempotency (defense-in-depth): one follow-up per action. The PRIMARY guarantee is
+        # upstream — execute_action's atomic approved->executing claim means only one caller reaches
+        # 'succeeded' per action; the dup-check + org predicate below only harden that guarantee.
+        dup = (
+            await s.execute(
+                text(
+                    "SELECT 1 FROM runs WHERE org_id = :o "
+                    "AND trigger->'payload'->'observation'->>'action_id' = :aid LIMIT 1"
+                ),
+                {"o": str(org_id), "aid": str(action_id)},
+            )
+        ).first()
+        if dup is not None:
+            return
+        # Backfill the root run into the case on the first follow-up so the whole chain shares
+        # case_id (the runs row is mutable — only run_events/audit are append-only).
+        if m["case_id"] is None:
+            await s.execute(
+                text(
+                    "UPDATE runs SET case_id = CAST(:cid AS uuid), case_step = 0 "
+                    "WHERE id = :r AND org_id = :o AND case_id IS NULL"
+                ),
+                {"cid": str(root_case_id), "r": str(parent_run_id), "o": str(org_id)},
+            )
+
+    prior = (m["trigger"] or {}).get("payload") or {}
+    inputs = {
+        "query": prior.get("query", ""),
+        "process_key": prior.get("process_key"),
+        "service": prior.get("service"),
+        "incident_ref": prior.get("incident_ref"),
+        "observation": {
+            "action_id": str(action_id),
+            "tool": m["tool"],
+            "state": m["state"],
+            "result": m["result"],
+            "target_ref": m["target_ref"],
+            "test_data": True,
+        },
+        "case": {"root": str(root_case_id), "step": next_step},
+    }
+    await dispatch.create_followup_run(
+        parent_run_id=str(parent_run_id), skill_id=skill_id, org_id=org_id,
+        inputs=inputs, case_id=str(root_case_id), case_step=next_step,
+    )
+    logger.info(
+        "case %s: chained follow-up step %d after action %s", root_case_id, next_step, action_id
+    )
 
 
 async def handle_ingest(payload: dict[str, Any]) -> None:

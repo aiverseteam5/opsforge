@@ -9,6 +9,7 @@ exposing ONLY the skill manifest's read-only tools (plus two reserved tools:
 
 from __future__ import annotations
 
+import json
 import re
 from contextlib import AsyncExitStack
 from typing import Any
@@ -332,6 +333,26 @@ def _render_knowledge(chunks: list[KnowledgeChunkRow]) -> str:
     return "\n".join(parts)
 
 
+def _render_observation(obs: dict[str, Any]) -> str:
+    """Render the executed outcome of a prior gated step so a follow-up run can OBSERVE what its
+    approved move actually did, then decide the next step. Domain-agnostic — it renders WHATEVER
+    result the action returned (no operation-specific field), through the same redact() chokepoint
+    every other context boundary uses."""
+    tool = obs.get("tool", "?")
+    state = obs.get("state", "?")
+    target = obs.get("target_ref") or "—"
+    result = obs.get("result")
+    body = json.dumps(redact(result), default=str)[:600] if result is not None else "(none)"
+    return (
+        "## Observed result (a step you proposed earlier was approved and EXECUTED)\n"
+        f"- Action `{tool}` on `{target}` → state: **{state}**\n"
+        f"- Result: {body}\n"
+        "- This is the executed outcome of a prior gated step (TEST DATA). Before claiming the "
+        "issue is resolved, RE-READ ground truth to verify; if it is NOT resolved, propose at most "
+        "one more gated step."
+    )
+
+
 async def assemble_context(
     org_id: Any,
     manifest: dict[str, Any],
@@ -379,6 +400,12 @@ async def assemble_context(
     incident_block = await _incident_context(org_id, inputs)
     if incident_block:
         parts.append(incident_block)
+
+    # Iterative remediation (Slice 2): on a follow-up run the chain hook seeds the executed result
+    # of the prior gated step so the agent can OBSERVE it and verify/continue. Generic, additive.
+    observation = inputs.get("observation")
+    if isinstance(observation, dict) and observation:
+        parts.append(_render_observation(observation))
 
     parts.append(
         "## Your read-only tools\n"

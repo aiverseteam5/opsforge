@@ -208,6 +208,44 @@ async def _findings(org_id: Any, params: dict[str, Any], run_id: UUID) -> Any:
     return {"findings": out, "count": len(out), "state": state}
 
 
+async def _action_outcome(org_id: Any, params: dict[str, Any], run_id: UUID) -> Any:
+    """Look up a prior proposed action by id and return its executed OUTCOME — state + the captured
+    result — so a follow-up step can OBSERVE what an approved, executed move actually did before
+    deciding the next move. READ-ONLY + org-scoped (the actions table is FORCE-RLS); never acts.
+    Raw SELECT (not an `actions` import) so this stays below the actions layer. The result was
+    redacted at execute time; it may be TEST DATA."""
+    params = params or {}
+    aid = str(params.get("action_id") or "").strip()
+    try:
+        UUID(aid)
+    except (ValueError, AttributeError):
+        return {"found": False, "reason": "a valid action_id is required"}
+    async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)  # actions is FORCE-RLS — set the org GUC before the read
+        row = (
+            await s.execute(
+                text(
+                    "SELECT tool, action_class, state, target_ref, result, executed_at "
+                    "FROM actions WHERE id = CAST(:id AS uuid) AND org_id = :o"
+                ),
+                {"id": aid, "o": str(org_id)},
+            )
+        ).first()
+    if row is None:
+        return {"found": False, "action_id": aid}  # foreign-org / unknown → fail-closed
+    m = row._mapping
+    return {
+        "found": True,
+        "action_id": aid,
+        "tool": m["tool"],
+        "action_class": m["action_class"],
+        "state": m["state"],
+        "target_ref": m["target_ref"],
+        "result": m["result"],
+        "executed_at": str(m["executed_at"]) if m["executed_at"] else None,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # registry (fqn -> spec). The `kb.*` namespace is reserved for internal tools.
 # --------------------------------------------------------------------------- #
@@ -269,5 +307,20 @@ INTERNAL_TOOLS: dict[str, ToolSpec] = {
             "additionalProperties": False,
         },
         handler=_findings,
+    ),
+    "kb.action_outcome": ToolSpec(
+        description=(
+            "Look up a prior proposed action by id and return its executed OUTCOME (state + the "
+            "captured result). Use on a follow-up step to OBSERVE what an approved, executed move "
+            "actually did before deciding the next move. Read-only; never acts. Result may be "
+            "TEST DATA — re-read ground truth to verify before claiming resolution."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {"action_id": {"type": "string"}},
+            "required": ["action_id"],
+            "additionalProperties": False,
+        },
+        handler=_action_outcome,
     ),
 }

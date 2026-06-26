@@ -69,6 +69,12 @@ services:
       # DEV-ONLY: the contract-faithful FAKE MCP servers (TEST DATA) so the local stack can run
       # the Slice-1 validate-the-signal proof without a real monitoring endpoint. Not in prod.
       - ./tests/fake_mcp:/app/tests/fake_mcp:ro
+      # DEV-ONLY: shared writable state for the fake monitor (Slice 2) so a fix applied by the
+      # executor is visible to the follow-up VERIFY read across sessions + worker replicas.
+      - fakestate:/data/fakestate
+      # DEV-ONLY: live skill packs (manifest + INSTRUCTIONS) so tuning them needs no rebuild; they
+      # are re-installed from here at boot / commission. Baked copy still ships in the image.
+      - ./skills:/app/skills:ro
 
   worker:
     build: .
@@ -88,8 +94,11 @@ services:
       # DEV-ONLY: the contract-faithful FAKE MCP servers (TEST DATA) so the local stack can run
       # the Slice-1 validate-the-signal proof without a real monitoring endpoint. Not in prod.
       - ./tests/fake_mcp:/app/tests/fake_mcp:ro
+      # DEV-ONLY: shared writable state for the fake monitor (Slice 2) — see api above.
+      - fakestate:/data/fakestate
     deploy:
       replicas: 3
 
 volumes:
   pgdata: {}
+  fakestate: {}

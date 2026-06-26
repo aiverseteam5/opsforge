@@ -34,6 +34,9 @@ tools:
   - {tool: kb.search_knowledge, class: read_only}
   - {tool: kb.findings, class: read_only}
   - {tool: monitoring.get_service_status, class: read_only}
+  # Slice 2 — on a follow-up run, OBSERVE the executed outcome of the prior gated step so the agent
+  # can verify the fix worked (then conclude or take the next gated step). Read-only.
+  - {tool: kb.action_outcome, class: read_only}
 # ONE gated remediation: adjust the monitoring data-pull interval (the stale-alert fix from the
 # learned process). The deterministic engine disposes — a config change to an un-vouched
 # (prod-default) monitoring connector is production-touching and GATES for a human. Reversible:
@@ -50,6 +53,9 @@ policy:
   max_tool_calls: 10
   max_runtime_seconds: 180
   forbidden_targets: []
+  # Slice 2 — max runs in one remediation case (validate -> fix -> verify -> conclude). Bounds the
+  # iterate loop so a fix that never clears cannot loop forever.
+  max_case_steps: 3
 report:
   format: rca_v1
-evals: [evals/false_alert.yaml]
+evals: [evals/false_alert.yaml, evals/remediation_followup.yaml]

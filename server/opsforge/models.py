@@ -213,6 +213,11 @@ class Run(PkMixin, OrgMixin, Base):
     skill_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="queued")
     parent_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # Slice 2 — iterative-remediation CASE lineage: the case this run belongs to (NULL = a
+    # legacy/standalone run) and its 0-based step in the chain. Nullable + additive; also the
+    # honest home for the future Slice-3 customer_id column.
+    case_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    case_step: Mapped[int | None] = mapped_column(Integer)
     trigger: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     model: Mapped[str | None] = mapped_column(String(200))
     started_at: Mapped[datetime.datetime | None] = mapped_column()
@@ -228,7 +233,9 @@ class Run(PkMixin, OrgMixin, Base):
             ("queued", "running", "reporting", "done", "failed", "cancelled"),
             "status",
         ),
+        CheckConstraint("case_step >= 0", name="ck_runs_case_step"),
         Index("ix_runs_org_status", "org_id", "status"),
+        Index("ix_runs_case_id", "case_id"),
     )
 
 

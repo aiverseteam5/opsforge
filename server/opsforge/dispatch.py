@@ -36,8 +36,18 @@ async def _insert_run(
     channel: str | None,
     user_id: str | None,
     model: str | None,
+    parent_run_id: str | None = None,
+    case_id: str | None = None,
+    case_step: int | None = None,
 ) -> str:
     import json
+
+    # `observation` / `case` are WORKER-RESERVED: only the chain hook (create_followup_run, kind=
+    # "followup") may seed them. A caller-supplied input (POST /runs) must never inject them — a
+    # fabricated "## Observed result" block would spoof an executed remediation into the agent's
+    # context + report. Strip them on every non-followup run (single run-creation chokepoint).
+    if trigger_kind != "followup":
+        inputs = {k: v for k, v in (inputs or {}).items() if k not in ("observation", "case")}
 
     trigger = {
         "kind": trigger_kind,
@@ -50,8 +60,10 @@ async def _insert_run(
         run_id = (
             await s.execute(
                 text(
-                    "INSERT INTO runs (org_id, skill_id, status, trigger, model) "
-                    "VALUES (:org,:skill,'queued',CAST(:trigger AS jsonb),:model) "
+                    "INSERT INTO runs (org_id, skill_id, status, trigger, model, "
+                    "parent_run_id, case_id, case_step) "
+                    "VALUES (:org,:skill,'queued',CAST(:trigger AS jsonb),:model,"
+                    "CAST(:parent AS uuid),CAST(:case_id AS uuid),:case_step) "
                     "RETURNING id"
                 ),
                 {
@@ -59,6 +71,9 @@ async def _insert_run(
                     "skill": skill_id,
                     "trigger": json.dumps(trigger),
                     "model": model,
+                    "parent": parent_run_id,
+                    "case_id": case_id,
+                    "case_step": case_step,
                 },
             )
         ).scalar_one()
@@ -100,6 +115,46 @@ async def create_run(
         detail={"skill": skill_slug, "surface": surface, "trigger_kind": trigger_kind},
     )
     return {"run_id": run_id, "status": "queued"}
+
+
+async def create_followup_run(
+    *,
+    parent_run_id: str,
+    skill_id: Any,
+    org_id: str,
+    inputs: dict[str, Any],
+    case_id: str,
+    case_step: int,
+    model: str | None = None,
+) -> str:
+    """Chain a follow-up run after an executed action (Slice 2 iterative remediation). The agent
+    re-investigates with the prior step's OBSERVED result carried in `inputs` and either concludes
+    or proposes the next gated move — the gate re-applies because a follow-up re-enters the agent
+    loop + resolve_proposal. Reuses _insert_run; sets parent_run_id + trigger.kind='followup' + the
+    case lineage. Called only from the worker chain hook (the one seam above the import layers)."""
+    run_id = await _insert_run(
+        skill_id,
+        org_id,
+        inputs,
+        trigger_kind="followup",
+        surface=None,
+        channel=None,
+        user_id=None,
+        model=model,
+        parent_run_id=str(parent_run_id),
+        case_id=str(case_id),
+        case_step=case_step,
+    )
+    await record_audit(
+        org_id,
+        "system:followup",
+        "run.followup",
+        subject_ref=run_id,
+        detail={
+            "parent_run_id": str(parent_run_id), "case_id": str(case_id), "case_step": case_step,
+        },
+    )
+    return run_id
 
 
 # --------------------------------------------------------------------------- #

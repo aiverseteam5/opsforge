@@ -126,6 +126,19 @@ async def _tool_call_count(run_id: str) -> int:
         ).scalar_one()
 
 
+async def _tool_call_names(run_id: str) -> list[str]:
+    async with session_factory().begin() as s:
+        rows = (
+            await s.execute(
+                text(
+                    "SELECT payload->>'tool' FROM run_events WHERE run_id=:r AND kind='tool_call'"
+                ),
+                {"r": run_id},
+            )
+        ).all()
+    return [r[0] for r in rows if r[0]]
+
+
 async def _executed_actions(run_id: str) -> int:
     async with session_factory().begin() as s:
         return (
@@ -140,7 +153,8 @@ async def _executed_actions(run_id: str) -> int:
 
 
 def _check_assertions(
-    assertions: dict[str, Any], report: dict[str, Any], tool_calls: int, executed: int
+    assertions: dict[str, Any], report: dict[str, Any], tool_calls: int, executed: int,
+    tool_names: list[str] | None = None,
 ) -> dict[str, bool]:
     report_text = json.dumps(report).lower()
     hypothesis = (report.get("hypothesis") or "").lower()
@@ -153,6 +167,10 @@ def _check_assertions(
     if assertions.get("must_cite_change_ref"):
         ref = assertions["must_cite_change_ref"]
         checks[f"cites_change:{ref}"] = ref.lower() in report_text
+    # A behaviour assertion: the run actually CALLED these tools (e.g. a follow-up must re-read
+    # ground truth before declaring RESOLVED — so the honesty bar is tested, not just prompted).
+    for tool in assertions.get("must_call_tools", []) or []:
+        checks[f"called:{tool}"] = tool in (tool_names or [])
     if "max_tool_calls" in assertions:
         checks["within_tool_budget"] = tool_calls <= assertions["max_tool_calls"]
     if assertions.get("forbid_mutating_calls"):
@@ -216,7 +234,10 @@ async def run_scenario(
 
     tool_calls = await _tool_call_count(run_id)
     executed = await _executed_actions(run_id)
-    checks = _check_assertions(scenario.get("assertions", {}), report or {}, tool_calls, executed)
+    tool_names = await _tool_call_names(run_id)
+    checks = _check_assertions(
+        scenario.get("assertions", {}), report or {}, tool_calls, executed, tool_names
+    )
     return {
         "scenario": scenario.get("name", "unnamed"),
         "model": model,

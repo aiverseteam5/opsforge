@@ -59,6 +59,9 @@ class SkillPolicy(BaseModel):
     # approval escalation (e.g. {"P1": "admin"}). Enforced by the executor / approval.
     freeze_windows: list[dict[str, Any]] = Field(default_factory=list)
     requires_role_for_priority: dict[str, str] = Field(default_factory=dict)
+    # Slice 2 — max runs in one iterative-remediation case (the chain hook stops spawning
+    # follow-ups past this, bounding the iterate loop). Read via policy.case_budget.
+    max_case_steps: int = 3
 
 
 class SkillReport(BaseModel):
