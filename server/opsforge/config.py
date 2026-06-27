@@ -117,6 +117,11 @@ class Settings(BaseSettings):
     # the worker asserts this at startup to catch dim-mismatch before writes fail.
     embedding_dimension: int = 1536
 
+    # JIT credential leases: default TTL for minted credentials (seconds).
+    # Individual providers may issue shorter-lived credentials; this is the cap
+    # used when the provider config omits duration_seconds.
+    jit_lease_ttl_s: int = 3600
+
     # Worker queue loop.
     worker_poll_interval_ms: int = 500
     worker_max_attempts: int = 5

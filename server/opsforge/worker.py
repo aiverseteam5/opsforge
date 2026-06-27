@@ -449,6 +449,14 @@ async def scheduler_tick() -> None:
             {"interval": get_settings().graph_sync_interval_s, "org": org},
         )
     await _run_due_cron_schedules()
+    await _expire_credential_leases()
+
+
+async def _expire_credential_leases() -> None:
+    from .credentials import expire_leases
+    expired = await expire_leases()
+    if expired:
+        logger.debug("expired %d credential leases", expired)
 
 
 async def _run_due_cron_schedules() -> None:
