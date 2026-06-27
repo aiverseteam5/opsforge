@@ -47,6 +47,26 @@ jobs:
       - name: Run tests
         run: pytest tests/ -q --tb=short
 
+  dependency-audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv + pip-audit
+        run: pip install uv pip-audit
+
+      - name: Install dependencies
+        run: uv pip install --system ".[dev]"
+
+      - name: Audit for known CVEs
+        run: pip-audit --strict
+
   docker-build:
     name: Docker build (smoke test)
     runs-on: ubuntu-latest
