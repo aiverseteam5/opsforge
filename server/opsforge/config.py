@@ -117,6 +117,13 @@ class Settings(BaseSettings):
     # the worker asserts this at startup to catch dim-mismatch before writes fail.
     embedding_dimension: int = 1536
 
+    # When True, the X-Forwarded-For header from the upstream proxy is trusted
+    # for rate-limit key extraction. Only enable when OpsForge sits behind a
+    # reverse proxy you control (nginx, ALB, etc.) that sets this header reliably.
+    # Leave False (default) for direct-to-internet deployments — otherwise any
+    # caller can spoof XFF to rotate their apparent IP and bypass rate limits.
+    trusted_proxy: bool = False
+
     # Webhook rate limiting: sliding-window per source IP.
     # Applied to all /api/v1/webhooks/* routes (alert, change, Slack).
     webhook_rate_limit_requests: int = 120  # requests allowed per window

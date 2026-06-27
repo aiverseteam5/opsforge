@@ -16,6 +16,10 @@ spec:
         app.kubernetes.io/name: {{ include "opsforge.name" . }}
         app.kubernetes.io/component: api
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: api
           image: {{ include "opsforge.image" . }}
@@ -23,6 +27,10 @@ spec:
           args: ["api"]
           ports:
             - containerPort: {{ .Values.api.port }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           env:
             {{- include "opsforge.env" . | nindent 12 }}
           readinessProbe:

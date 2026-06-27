@@ -16,11 +16,19 @@ spec:
         app.kubernetes.io/name: {{ include "opsforge.name" . }}
         app.kubernetes.io/component: worker
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: worker
           image: {{ include "opsforge.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["worker"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           env:
             {{- include "opsforge.env" . | nindent 12 }}
           resources:

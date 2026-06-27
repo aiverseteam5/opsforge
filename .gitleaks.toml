@@ -1,0 +1,50 @@
+# Gitleaks configuration for OpsForge.
+#
+# Extends the default ruleset; allowlists cover deliberate test fixtures and
+# placeholder values that are NOT real secrets.
+
+title = "OpsForge gitleaks config"
+
+[extend]
+# Pull in the upstream default rules so we don't maintain our own regex set.
+useDefault = true
+
+# --------------------------------------------------------------------------- #
+# Global allowlist — paths and patterns that are never real secrets
+# --------------------------------------------------------------------------- #
+[allowlist]
+description = "Project-wide allowlists"
+
+# Files that exist specifically to document what vars look like — values are
+# empty or annotated placeholders, never live credentials.
+paths = [
+    ".env.example",
+]
+
+# Regexes matched against the secret VALUE captured by any rule.
+# Keep this list tight: a broad regex silently swallows real leaks.
+regexes = [
+    # Test-only dummy keys used in unit tests (not real provider keys)
+    "^sk-test$",
+    "^sk-123$",
+    "^sk-CONNECTOR-SECRET-xyz$",
+    "^sk-ROTATED-9$",
+    "^sk-AUDIT-SECRET$",
+    # Inline mock signing / webhook secrets in test classes
+    "^shhh$",
+    "^topsecret$",
+    "^configured$",
+    # Migration comment referencing "dev-grade password" (no value present)
+    "^dev-grade$",
+]
+
+# --------------------------------------------------------------------------- #
+# Rule-level stopwords for false-positives inside specific rules
+# --------------------------------------------------------------------------- #
+
+# Suppress generic-api-key hits on the DEFAULT_ORG_ID constant — it is a
+# well-known UUID sentinel, not a key.
+[[rules]]
+id = "generic-api-key"
+[rules.allowlist]
+regexes = ["00000000-0000-0000-0000-000000000001"]

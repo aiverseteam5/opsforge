@@ -24,7 +24,14 @@ from sqlalchemy import text
 
 from .config import get_settings
 from .connectors import load_connector
-from .db import claim_jobs, complete_job, fail_job, scope_to_org, session_factory
+from .db import (  # noqa: E501
+    assert_restricted_role,
+    claim_jobs,
+    complete_job,
+    fail_job,
+    scope_to_org,
+    session_factory,
+)
 from .graph import sync_connector
 
 logger = logging.getLogger("opsforge.worker")
@@ -548,6 +555,7 @@ async def process_one(
 async def run_forever(shutdown: asyncio.Event) -> None:
     settings = get_settings()
     interval = settings.worker_poll_interval_ms / 1000
+    await assert_restricted_role()
     try:
         from .skills import install_builtin_skills
 
