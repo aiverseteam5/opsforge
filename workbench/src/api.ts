@@ -117,6 +117,17 @@ export interface Finding {
   detail: any; evidence_refs: string[]; confidence: number | null;
   state: FindingState; seq: number;
 }
+// Phase 3: codified skill awaiting human review before activation.
+export interface ProposedSkill {
+  id: string;
+  slug: string;
+  version: string;
+  name: string;
+  source: string;
+  enabled: boolean;
+  manifest: Record<string, any>;
+}
+
 // Provider: the credential is WRITE-ONLY — there is deliberately no api_key field
 // on this read shape. It is never returned by the API, so it can never reach the DOM.
 export interface Provider {
@@ -186,6 +197,12 @@ export const api = {
   deleteConnector: (id: string) => req(`/connectors/${id}`, { method: "DELETE" }),
 
   listSkills: () => req<Skill[]>("/skills"),
+  listProposed: (page = 1, pageSize = 20) =>
+    req<{ items: ProposedSkill[]; total: number; page: number; page_size: number }>(
+      `/skills/proposed?page=${page}&page_size=${pageSize}`
+    ),
+  approveSkill: (id: string) => req(`/skills/${id}/approve`, { method: "POST" }),
+  rejectSkill: (id: string) => req(`/skills/${id}/reject`, { method: "POST" }),
 
   listSchedules: () => req<Schedule[]>("/schedules"),
   createSchedule: (body: Record<string, unknown>) =>

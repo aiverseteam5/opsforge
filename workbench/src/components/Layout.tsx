@@ -4,6 +4,7 @@ import { CommandPalette } from "./CommandPalette";
 import { MissionControl } from "../pages/MissionControl";
 import { RunDetail } from "../pages/RunDetail";
 import { Skills } from "../pages/Skills";
+import { ProposedSkills } from "../pages/ProposedSkills";
 import { Connectors } from "../pages/Connectors";
 import { Schedules } from "../pages/Schedules";
 import { Approvals } from "../pages/Approvals";
@@ -26,6 +27,7 @@ const NAV: { to?: string; label?: string; end?: boolean; section?: string }[] = 
   { section: "Operations" },
   { to: "/catalog", label: "Catalog" },
   { to: "/skills", label: "Skills" },
+  { to: "/skills/proposed", label: "Proposed skills" },
   { to: "/connectors", label: "Connectors" },
   { to: "/schedules", label: "Schedules" },
   { to: "/audit", label: "Audit" },
@@ -89,6 +91,7 @@ export function Layout() {
           <Route path="/catalog" element={<Catalog />} />
           <Route path="/catalog/:key/connect" element={<CatalogConnect />} />
           <Route path="/skills" element={<Skills />} />
+          <Route path="/skills/proposed" element={<ProposedSkills />} />
           <Route path="/connectors" element={<Connectors />} />
           <Route path="/schedules" element={<Schedules />} />
           <Route path="/audit" element={<Audit />} />
