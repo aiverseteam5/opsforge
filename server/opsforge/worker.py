@@ -161,6 +161,202 @@ async def handle_reconcile(payload: dict[str, Any]) -> None:
     await generate_process(org_id, process_key, drafter=configured_drafter())
 
 
+async def handle_codify_skill(payload: dict[str, Any]) -> None:
+    """Analyze a completed run's events and propose a reusable codified skill.
+
+    Idempotent: a SELECT-before-INSERT check prevents duplicate skills on retry.
+    The embedding is computed BEFORE opening any DB transaction (it is an HTTP call
+    and cannot participate in a Postgres transaction)."""
+    import json
+    import re
+
+    from sqlalchemy import text
+
+    from .db import record_audit, scope_to_org, session_factory
+    from .gateway import LiteLLMGateway
+    from .knowledge import _vector_literal
+    from .security import redact
+
+    run_id = payload.get("run_id")
+    org_id = payload.get("org_id")
+    if not run_id or not org_id:
+        raise ValueError("codify_skill job missing run_id or org_id")
+
+    # Load run events (tool results, evidence, proposals, and the final report).
+    async with session_factory().begin() as s:
+        rows = (
+            await s.execute(
+                text(
+                    "SELECT kind, payload FROM run_events "
+                    "WHERE run_id = :rid "
+                    "AND kind IN ('tool_result', 'evidence', 'proposal', 'report') "
+                    "ORDER BY seq"
+                ),
+                {"rid": run_id},
+            )
+        ).all()
+
+    if not rows:
+        logger.warning("codify_skill: no usable events for run %s, skipping", run_id)
+        return  # permanent non-retryable: nothing to learn from
+
+    # Build and redact the transcript.
+    raw_transcript = "\n".join(f"[{r.kind}] {json.dumps(r.payload or {})}" for r in rows)
+    transcript = redact(raw_transcript)
+
+    # Truncate: keep first 4K chars (context/trigger) + last 20K chars (resolution).
+    _FIRST, _LAST = 4096, 20480
+    if len(transcript) > _FIRST + _LAST:
+        transcript = transcript[:_FIRST] + "\n...[truncated]...\n" + transcript[-_LAST:]
+
+    _EXTRACT_TOOL = {
+        "type": "function",
+        "function": {
+            "name": "extract_skill_data",
+            "description": "Extract a reusable skill from the agent run transcript.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "slug": {"type": "string", "description": "URL-safe slug, e.g. disk-space-check"},
+                    "name": {"type": "string", "description": "Human-readable skill name"},
+                    "description": {"type": "string", "description": "What this skill investigates"},
+                    "instructions_md": {"type": "string", "description": "Full INSTRUCTIONS.md content"},
+                    "skill_yaml": {"type": "string", "description": "Full skill.yaml content"},
+                },
+                "required": ["slug", "name", "description", "instructions_md", "skill_yaml"],
+            },
+        },
+    }
+
+    gateway = LiteLLMGateway()
+    settings = get_settings()
+
+    result = await gateway.chat(
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are an OpsForge skill architect. Analyze this agent run transcript "
+                    "and produce a reusable skill definition by calling extract_skill_data. "
+                    "Capture the investigation pattern, tools used, and reasoning steps."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Agent run transcript:\n\n{transcript}\n\nExtract a reusable skill.",
+            },
+        ],
+        tools=[_EXTRACT_TOOL],
+        model=settings.model,
+        tool_choice="required",
+    )
+
+    if not result.tool_calls:
+        logger.warning("codify_skill: LLM did not call extract_skill_data for run %s", run_id)
+        return  # permanent non-retryable: LLM declined
+
+    args = result.tool_calls[0].arguments
+    slug_raw = (args.get("slug") or f"codified-{run_id[:8]}").lower()
+    slug = re.sub(r"[^a-z0-9-]", "-", slug_raw)[:64].strip("-")
+    name = args.get("name") or slug
+    description = args.get("description") or ""
+    instructions_md = args.get("instructions_md") or ""
+    skill_yaml_str = args.get("skill_yaml") or ""
+
+    # Idempotency: check if a codified skill for this run already exists.
+    async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
+        existing = (
+            await s.execute(
+                text(
+                    "SELECT id FROM skills "
+                    "WHERE org_id = :org AND source = 'codified' "
+                    "AND manifest->>'run_id' = :rid"
+                ),
+                {"org": org_id, "rid": run_id},
+            )
+        ).first()
+
+    if existing:
+        logger.info("codify_skill: skill for run %s already exists (%s)", run_id, existing.id)
+        return
+
+    # Compute embedding BEFORE the transaction (HTTP call cannot be in a DB tx).
+    summary = f"{name}: {description}"
+    embedding: list[float] | None = None
+    try:
+        vecs = await gateway.embedding([summary], settings.embedding_model)
+        embedding = vecs[0] if vecs else None
+    except Exception:  # noqa: BLE001 - pattern skipped, skill still proposed
+        logger.warning("codify_skill: embedding failed for run %s, pattern skipped", run_id)
+
+    # Parse skill YAML, inject required fields.
+    try:
+        import yaml as _yaml
+        manifest_raw = _yaml.safe_load(skill_yaml_str) or {}
+    except Exception:
+        manifest_raw = {}
+    manifest_raw.setdefault("schema", "opsforge/skill/v1")
+    manifest_raw["slug"] = slug
+    manifest_raw["source"] = "codified"
+    manifest_raw["run_id"] = run_id  # keyed by the unique partial index
+
+    # Single transaction: skills INSERT + patterns INSERT.
+    skill_id_str: str | None = None
+    async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
+
+        skill_row = (
+            await s.execute(
+                text(
+                    "INSERT INTO skills "
+                    "(org_id, slug, version, manifest, instructions, source, enabled) "
+                    "VALUES (:org, :slug, '0.1.0', CAST(:manifest AS jsonb), "
+                    ":instructions, 'codified', false) "
+                    "ON CONFLICT (org_id, slug) DO NOTHING "
+                    "RETURNING id"
+                ),
+                {
+                    "org": org_id,
+                    "slug": slug,
+                    "manifest": json.dumps(manifest_raw),
+                    "instructions": instructions_md,
+                },
+            )
+        ).first()
+
+        if skill_row is None:
+            logger.info("codify_skill: slug %r already taken for run %s", slug, run_id)
+            return
+
+        skill_id_str = str(skill_row.id)
+
+        if embedding is not None:
+            await s.execute(
+                text(
+                    "INSERT INTO patterns (org_id, run_id, summary, embedding, resolution, outcome) "
+                    "VALUES (:org, :rid, :summary, CAST(:emb AS vector), :res, CAST(:outcome AS jsonb))"
+                ),
+                {
+                    "org": org_id,
+                    "rid": run_id,
+                    "summary": summary,
+                    "emb": _vector_literal(embedding),
+                    "res": description,
+                    "outcome": json.dumps({"slug": slug, "skill_id": skill_id_str}),
+                },
+            )
+
+    await record_audit(
+        org_id,
+        "system:codify",
+        "skill.proposed",
+        subject_ref=skill_id_str,
+        detail={"slug": slug, "run_id": run_id},
+    )
+    logger.info("codify_skill: proposed skill %r (id=%s) from run %s", slug, skill_id_str, run_id)
+
+
 # Dispatch table by job.kind.
 HANDLERS: dict[str, Handler] = {
     "noop": handle_noop,
@@ -171,6 +367,7 @@ HANDLERS: dict[str, Handler] = {
     "ingest_tickets": handle_ingest_tickets,
     "ingest_knowledge": handle_ingest_knowledge,
     "reconcile": handle_reconcile,
+    "codify_skill": handle_codify_skill,
 }
 
 

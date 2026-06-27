@@ -154,6 +154,43 @@ async def enqueue(
     return row.id
 
 
+_ENQUEUE_IDEMPOTENT_SQL = text(
+    """
+    INSERT INTO jobs (org_id, kind, payload, status, run_after, attempts)
+    VALUES (:org_id, :kind, CAST(:payload AS jsonb), 'queued',
+            COALESCE(:run_after, now()), 0)
+    ON CONFLICT DO NOTHING
+    RETURNING id
+    """
+)
+
+
+async def enqueue_idempotent(
+    session: AsyncSession,
+    *,
+    kind: str,
+    payload: dict[str, Any] | None = None,
+    org_id: str | None = None,
+    run_after: str | None = None,
+) -> UUID | None:
+    """Insert a job, silently skipping on conflict. Returns the new job id, or None
+    if a conflicting row already exists. Caller owns the transaction (commit after)."""
+    org = org_id or get_settings().org_id
+    await scope_to_org(session, org)
+    row = (
+        await session.execute(
+            _ENQUEUE_IDEMPOTENT_SQL,
+            {
+                "org_id": org,
+                "kind": kind,
+                "payload": json.dumps(payload or {}),
+                "run_after": run_after,
+            },
+        )
+    ).first()
+    return row.id if row else None
+
+
 async def claim_jobs(
     session: AsyncSession, *, worker_id: str, org_id: str | None = None, batch: int = 1
 ) -> list[dict[str, Any]]:

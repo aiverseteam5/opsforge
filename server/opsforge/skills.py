@@ -188,7 +188,7 @@ async def get_skill(slug: str) -> dict[str, Any] | None:
             await s.execute(
                 text(
                     f"SELECT {_SKILL_COLS} FROM skills "
-                    "WHERE slug = :slug AND org_id = :org"
+                    "WHERE slug = :slug AND org_id = :org AND rejected_at IS NULL"
                 ),
                 {"slug": slug, "org": get_settings().org_id},
             )
@@ -200,7 +200,10 @@ async def get_skill_by_id(skill_id: Any) -> dict[str, Any] | None:
     async with session_factory().begin() as s:
         row = (
             await s.execute(
-                text(f"SELECT {_SKILL_COLS} FROM skills WHERE id = :id"),
+                text(
+                    f"SELECT {_SKILL_COLS} FROM skills "
+                    "WHERE id = :id AND rejected_at IS NULL"
+                ),
                 {"id": skill_id},
             )
         ).first()
@@ -213,7 +216,7 @@ async def list_skills() -> list[dict[str, Any]]:
             await s.execute(
                 text(
                     f"SELECT {_SKILL_COLS} FROM skills WHERE org_id = :org "
-                    "ORDER BY slug"
+                    "AND rejected_at IS NULL ORDER BY slug"
                 ),
                 {"org": get_settings().org_id},
             )

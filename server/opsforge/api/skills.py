@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import text
 
 from ..config import get_settings
@@ -21,6 +21,13 @@ from ..skills import (
     install_skill_dir,
     list_skills,
 )
+
+_WRITER_ROLES = {"admin", "operator"}
+
+
+def _require_writer(principal: Principal) -> None:
+    if principal.role not in _WRITER_ROLES:
+        raise HTTPException(status_code=403, detail="requires admin or operator")
 
 router = APIRouter(prefix="/api/v1/skills", tags=["skills"])
 
@@ -88,6 +95,98 @@ async def install_skill(
         detail={"filename": file.filename},
     )
     return {"installed": skill_id}
+
+
+@router.get("/proposed")
+async def list_proposed(
+    principal: Principal = Depends(require_token),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """List codified skills awaiting human review (source=codified, enabled=false,
+    not yet rejected). Registered before /{slug} to avoid route shadowing."""
+    async with session_factory().begin() as s:
+        rows = (
+            await s.execute(
+                text(
+                    "SELECT id, slug, version, manifest, source, enabled, created_at "
+                    "FROM skills "
+                    "WHERE org_id = :org AND source = 'codified' "
+                    "AND enabled = false AND rejected_at IS NULL "
+                    "ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+                ),
+                {"org": principal.org_id, "limit": limit, "offset": offset},
+            )
+        ).all()
+    return [
+        {
+            "id": str(r.id),
+            "slug": r.slug,
+            "version": r.version,
+            "name": (r.manifest or {}).get("name", r.slug),
+            "description": (r.manifest or {}).get("description", ""),
+            "source": r.source,
+            "enabled": r.enabled,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/{skill_id}/approve")
+async def approve_skill(
+    skill_id: str,
+    principal: Principal = Depends(require_token),
+):
+    """Approve a proposed codified skill: set enabled=true so it becomes active."""
+    _require_writer(principal)
+    async with session_factory().begin() as s:
+        result = await s.execute(
+            text(
+                "UPDATE skills SET enabled = true, updated_at = now() "
+                "WHERE id = :id AND org_id = :org AND source = 'codified' "
+                "AND rejected_at IS NULL "
+                "RETURNING id, slug"
+            ),
+            {"id": skill_id, "org": principal.org_id},
+        )
+        row = result.first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="proposed skill not found")
+    actor = f"user:{principal.user_id}" if principal.user_id else "system"
+    await record_audit(
+        principal.org_id, actor, "skill.approved",
+        subject_ref=str(row.id), detail={"slug": row.slug},
+    )
+    return {"id": str(row.id), "slug": row.slug, "enabled": True}
+
+
+@router.post("/{skill_id}/reject")
+async def reject_skill(
+    skill_id: str,
+    principal: Principal = Depends(require_token),
+):
+    """Reject a proposed codified skill: set rejected_at=now(). Patterns are retained."""
+    _require_writer(principal)
+    async with session_factory().begin() as s:
+        result = await s.execute(
+            text(
+                "UPDATE skills SET rejected_at = now(), updated_at = now() "
+                "WHERE id = :id AND org_id = :org AND source = 'codified' "
+                "AND rejected_at IS NULL "
+                "RETURNING id, slug"
+            ),
+            {"id": skill_id, "org": principal.org_id},
+        )
+        row = result.first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="proposed skill not found")
+    actor = f"user:{principal.user_id}" if principal.user_id else "system"
+    await record_audit(
+        principal.org_id, actor, "skill.rejected",
+        subject_ref=str(row.id), detail={"slug": row.slug},
+    )
+    return {"id": str(row.id), "slug": row.slug, "rejected": True}
 
 
 @router.get("/{slug}")
