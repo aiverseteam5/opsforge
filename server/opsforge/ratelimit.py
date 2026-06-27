@@ -80,7 +80,10 @@ def _client_ip(request: Request) -> str:
     if get_settings().trusted_proxy:
         forwarded = request.headers.get("x-forwarded-for")
         if forwarded:
-            return forwarded.split(",")[0].strip()
+            # Take the rightmost entry — the IP the proxy directly observed.
+            # Standard proxies (nginx proxy_add_x_forwarded_for, ALB) append, so
+            # the leftmost is client-controlled. Rightmost is proxy-certified.
+            return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 

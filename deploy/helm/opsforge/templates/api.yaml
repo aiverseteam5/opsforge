@@ -29,10 +29,19 @@ spec:
             - containerPort: {{ .Values.api.port }}
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           env:
             {{- include "opsforge.env" . | nindent 12 }}
+            - name: OPSFORGE_DATABASE_URL
+              value: {{ include "opsforge.appDatabaseUrl" . | quote }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
           readinessProbe:
             httpGet:
               path: /healthz

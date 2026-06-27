@@ -91,10 +91,18 @@ def test_client_ip_uses_direct_connection() -> None:
 
 
 def test_client_ip_respects_forwarded_for_when_trusted() -> None:
+    # Chain: "client-spoofed, proxy-observed" — rightmost is proxy-certified.
     req = _mock_request("10.0.0.1", forwarded="203.0.113.5, 10.0.0.1")
     with patch("opsforge.ratelimit.get_settings") as mock_settings:
         mock_settings.return_value.trusted_proxy = True
-        assert _client_ip(req) == "203.0.113.5"
+        assert _client_ip(req) == "10.0.0.1"
+
+
+def test_client_ip_trusted_proxy_no_xff_falls_back_to_direct() -> None:
+    req = _mock_request("1.2.3.4")  # no XFF header
+    with patch("opsforge.ratelimit.get_settings") as mock_settings:
+        mock_settings.return_value.trusted_proxy = True
+        assert _client_ip(req) == "1.2.3.4"
 
 
 def test_client_ip_ignores_forwarded_for_when_untrusted() -> None:
@@ -110,6 +118,15 @@ def test_client_ip_no_client() -> None:
     req.headers = {}
     with patch("opsforge.ratelimit.get_settings") as mock_settings:
         mock_settings.return_value.trusted_proxy = False
+        assert _client_ip(req) == "unknown"
+
+
+def test_client_ip_no_client_trusted_proxy() -> None:
+    req = MagicMock()
+    req.client = None
+    req.headers = {}
+    with patch("opsforge.ratelimit.get_settings") as mock_settings:
+        mock_settings.return_value.trusted_proxy = True
         assert _client_ip(req) == "unknown"
 
 

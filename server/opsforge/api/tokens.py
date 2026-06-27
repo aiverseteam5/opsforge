@@ -76,7 +76,7 @@ async def create_token(
                     "expires_at": body.expires_at,
                 },
             )
-        ).first()
+        ).one()
     actor = f"user:{principal.user_id}" if principal.user_id else "system"
     await record_audit(
         principal.org_id, actor, "token.created",

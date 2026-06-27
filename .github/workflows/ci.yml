@@ -63,7 +63,7 @@ jobs:
         run: pip install uv pip-audit
 
       - name: Install dependencies
-        run: uv pip install --system ".[dev]"
+        run: uv pip install --system ".[dev,cloud]"
 
       - name: Audit for known CVEs
         run: pip-audit --strict

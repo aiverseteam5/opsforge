@@ -24,7 +24,7 @@ from sqlalchemy import text
 
 from .config import get_settings
 from .connectors import load_connector
-from .db import (  # noqa: E501
+from .db import (
     assert_restricted_role,
     claim_jobs,
     complete_job,
