@@ -201,8 +201,10 @@ export const api = {
     req<{ items: ProposedSkill[]; total: number; page: number; page_size: number }>(
       `/skills/proposed?page=${page}&page_size=${pageSize}`
     ),
-  approveSkill: (id: string) => req(`/skills/${id}/approve`, { method: "POST" }),
-  rejectSkill: (id: string) => req(`/skills/${id}/reject`, { method: "POST" }),
+  approveSkill: (id: string, note?: string) =>
+    req(`/skills/${id}/approve`, { method: "POST", body: JSON.stringify({ note: note || null }) }),
+  rejectSkill: (id: string, note?: string) =>
+    req(`/skills/${id}/reject`, { method: "POST", body: JSON.stringify({ note: note || null }) }),
 
   listSchedules: () => req<Schedule[]>("/schedules"),
   createSchedule: (body: Record<string, unknown>) =>

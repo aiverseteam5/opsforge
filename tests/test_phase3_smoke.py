@@ -188,6 +188,75 @@ async def test_codify_loop_propose_then_approve(auth_headers: dict):
     assert skill_id not in ids_after, "approved skill still listed as proposed"
 
 
+async def test_codify_loop_approve_with_note(auth_headers: dict):
+    """Approve with a review note stores it and the worker picks it up next run."""
+    org_id = DEFAULT_ORG_ID
+    run_id = await _seed_run(org_id)
+    gw = _fake_gateway("oom-note-approve")
+
+    with patch("opsforge.gateway.LiteLLMGateway", return_value=gw):
+        from opsforge.worker import handle_codify_skill
+        await handle_codify_skill({"run_id": run_id, "org_id": org_id})
+
+    proposed = await _get_proposed(org_id)
+    skill = next(s for s in proposed if s["slug"] == "oom-note-approve")
+    skill_id = str(skill["id"])
+
+    async with conftest.api_client() as c:
+        r = await c.post(
+            f"/api/v1/skills/{skill_id}/approve",
+            headers=auth_headers,
+            json={"note": "Good skill — keep the restart proposal reversible"},
+        )
+    assert r.status_code == 200
+
+    # Verify note persisted in DB
+    async with session_factory().begin() as s:
+        note = (
+            await s.execute(
+                text("SELECT review_note FROM skills WHERE id = :id"),
+                {"id": skill_id},
+            )
+        ).scalar_one()
+    assert note == "Good skill — keep the restart proposal reversible"
+
+
+async def test_codify_loop_reject_with_note(auth_headers: dict):
+    """Reject with a note stores it; next codify call receives the feedback."""
+    org_id = DEFAULT_ORG_ID
+    run_id = await _seed_run(org_id)
+    gw_first = _fake_gateway("oom-note-reject")
+
+    with patch("opsforge.gateway.LiteLLMGateway", return_value=gw_first):
+        from opsforge.worker import handle_codify_skill
+        await handle_codify_skill({"run_id": run_id, "org_id": org_id})
+
+    proposed = await _get_proposed(org_id)
+    skill = next(s for s in proposed if s["slug"] == "oom-note-reject")
+    skill_id = str(skill["id"])
+
+    async with conftest.api_client() as c:
+        r = await c.post(
+            f"/api/v1/skills/{skill_id}/reject",
+            headers=auth_headers,
+            json={"note": "Too broad — split into separate disk and memory skills"},
+        )
+    assert r.status_code == 200
+    assert r.json()["rejected"] is True
+
+    # Run a second codify job and verify the feedback appears in the system prompt
+    run2 = await _seed_run(org_id)
+    gw_second = _fake_gateway("oom-note-reject-v2")
+    with patch("opsforge.gateway.LiteLLMGateway", return_value=gw_second):
+        await handle_codify_skill({"run_id": run2, "org_id": org_id})
+
+    # The second gateway.chat call should have received the feedback in system content
+    call_args = gw_second.chat.call_args
+    system_content = call_args.kwargs["messages"][0]["content"]
+    assert "Too broad" in system_content, "feedback note not injected into system prompt"
+    assert "rejected" in system_content
+
+
 async def test_codify_loop_reject(auth_headers: dict):
     """POST /skills/{id}/reject sets rejected_at and removes from proposed list."""
     org_id = DEFAULT_ORG_ID

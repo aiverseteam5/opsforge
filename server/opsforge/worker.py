@@ -231,6 +231,33 @@ async def handle_codify_skill(payload: dict[str, Any]) -> None:
     gateway = LiteLLMGateway()
     settings = get_settings()
 
+    # Fetch recent operator review notes to ground the LLM in what this org approves.
+    async with session_factory().begin() as s:
+        feedback_rows = (
+            await s.execute(
+                text(
+                    "SELECT slug, review_note, "
+                    "CASE WHEN enabled THEN 'approved' ELSE 'rejected' END AS verdict "
+                    "FROM skills "
+                    "WHERE org_id = :org AND source = 'codified' "
+                    "AND review_note IS NOT NULL AND review_note != '' "
+                    "ORDER BY updated_at DESC LIMIT 5"
+                ),
+                {"org": org_id},
+            )
+        ).all()
+
+    feedback_block = ""
+    if feedback_rows:
+        lines = "\n".join(
+            f"- [{r.verdict}] {r.slug}: {r.review_note}" for r in feedback_rows
+        )
+        feedback_block = (
+            "\n\nOperator review feedback from previous skills in this org "
+            "(use this to align the extracted skill with what the team approves):\n"
+            + lines
+        )
+
     result = await gateway.chat(
         messages=[
             {
@@ -239,6 +266,7 @@ async def handle_codify_skill(payload: dict[str, Any]) -> None:
                     "You are an OpsForge skill architect. Analyze this agent run transcript "
                     "and produce a reusable skill definition by calling extract_skill_data. "
                     "Capture the investigation pattern, tools used, and reasoning steps."
+                    + feedback_block
                 ),
             },
             {

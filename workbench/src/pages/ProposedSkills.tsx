@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ProposedSkill } from "../api";
 import { Empty, ErrorState, Loading, PageHeader } from "../components/ui";
 
+type ReviewAction = "approve" | "reject" | null;
+
 function SkillManifestPreview({ manifest }: { manifest: Record<string, any> }) {
   const [open, setOpen] = useState(false);
   return (
@@ -20,32 +22,40 @@ function SkillManifestPreview({ manifest }: { manifest: Record<string, any> }) {
 }
 
 function ProposedSkillCard({ skill, onDone }: { skill: ProposedSkill; onDone: () => void }) {
+  const [reviewing, setReviewing] = useState<ReviewAction>(null);
+  const [note, setNote] = useState("");
+
   const approve = useMutation({
-    mutationFn: () => api.approveSkill(skill.id),
+    mutationFn: (n: string) => api.approveSkill(skill.id, n || undefined),
     onSuccess: onDone,
   });
   const reject = useMutation({
-    mutationFn: () => api.rejectSkill(skill.id),
+    mutationFn: (n: string) => api.rejectSkill(skill.id, n || undefined),
     onSuccess: onDone,
   });
 
-  const onApprove = () => {
-    if (!window.confirm(
-      `Approve "${skill.name}" (${skill.slug})?\n\nThis will enable it for agent runs.`
-    )) return;
-    approve.mutate();
+  const isPending = approve.isPending || reject.isPending;
+
+  const openReview = (action: ReviewAction) => {
+    setNote("");
+    setReviewing(action);
   };
 
-  const onReject = () => {
-    if (!window.confirm(
-      `Reject "${skill.name}" (${skill.slug})?\n\nIt will be hidden from the skill list and not run.`
-    )) return;
-    reject.mutate();
+  const cancelReview = () => {
+    setReviewing(null);
+    setNote("");
+  };
+
+  const confirmReview = () => {
+    if (reviewing === "approve") approve.mutate(note);
+    else if (reviewing === "reject") reject.mutate(note);
   };
 
   const desc: string = skill.manifest?.description ?? "";
   const tools: any[] = skill.manifest?.tools ?? [];
   const proposals: any[] = skill.manifest?.proposals ?? [];
+
+  const mutationError = approve.error || reject.error;
 
   return (
     <div className="card space-y-3">
@@ -75,32 +85,64 @@ function ProposedSkillCard({ skill, onDone }: { skill: ProposedSkill; onDone: ()
 
       <SkillManifestPreview manifest={skill.manifest} />
 
-      {(approve.isError || reject.isError) && (
+      {mutationError && (
         <div className="text-xs text-rose-400">
-          {String((approve.error || reject.error) instanceof Error
-            ? (approve.error || reject.error)!
-            : "Error")}
+          {String(mutationError instanceof Error ? mutationError : "Error")}
         </div>
       )}
 
-      <div className="flex gap-2 pt-1">
-        <button
-          className="btn"
-          style={{ borderColor: "#15803d" }}
-          disabled={approve.isPending || reject.isPending}
-          onClick={onApprove}
-        >
-          {approve.isPending ? "Approving…" : "Approve & enable"}
-        </button>
-        <button
-          className="btn"
-          style={{ borderColor: "#9f1239" }}
-          disabled={approve.isPending || reject.isPending}
-          onClick={onReject}
-        >
-          {reject.isPending ? "Rejecting…" : "Reject"}
-        </button>
-      </div>
+      {reviewing ? (
+        <div className="space-y-2 rounded border border-edge bg-ink p-3">
+          <div className="text-xs font-medium">
+            {reviewing === "approve" ? "Approve & enable" : "Reject"}{" "}
+            <span className="text-muted">"{skill.name}"</span>
+          </div>
+          <textarea
+            className="w-full rounded border border-edge bg-surface px-2 py-1.5 text-xs
+                       text-zinc-200 placeholder:text-zinc-600 focus:outline-none
+                       focus:ring-1 focus:ring-sky-500"
+            rows={3}
+            placeholder="Optional note — what did you like or want improved? (fed back to the AI for future proposals)"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            disabled={isPending}
+          />
+          <div className="flex gap-2">
+            <button
+              className="btn"
+              style={{ borderColor: reviewing === "approve" ? "#15803d" : "#9f1239" }}
+              disabled={isPending}
+              onClick={confirmReview}
+            >
+              {isPending
+                ? reviewing === "approve" ? "Approving…" : "Rejecting…"
+                : reviewing === "approve" ? "Confirm approve" : "Confirm reject"}
+            </button>
+            <button className="btn" disabled={isPending} onClick={cancelReview}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex gap-2 pt-1">
+          <button
+            className="btn"
+            style={{ borderColor: "#15803d" }}
+            disabled={isPending}
+            onClick={() => openReview("approve")}
+          >
+            Approve & enable
+          </button>
+          <button
+            className="btn"
+            style={{ borderColor: "#9f1239" }}
+            disabled={isPending}
+            onClick={() => openReview("reject")}
+          >
+            Reject
+          </button>
+        </div>
+      )}
     </div>
   );
 }
