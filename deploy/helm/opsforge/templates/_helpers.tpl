@@ -51,6 +51,11 @@ postgresql+psycopg://{{ .Values.postgres.appUser }}:{{ .Values.postgres.appPassw
     secretKeyRef:
       name: {{ include "opsforge.fullname" . }}-secrets
       key: fernet-key
+- name: OPSFORGE_TOKEN_HMAC_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "opsforge.fullname" . }}-secrets
+      key: token-hmac-secret
 - name: OPSFORGE_WEBHOOK_SECRET
   valueFrom:
     secretKeyRef:

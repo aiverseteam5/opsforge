@@ -7,6 +7,7 @@ boundary calls before persisting or logging external data.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import re
@@ -50,7 +51,12 @@ def decrypt(token: bytes) -> str:
 
 
 def hash_token(raw: str) -> str:
-    return hashlib.sha256(raw.encode()).hexdigest()
+    secret = get_settings().token_hmac_secret
+    if not secret:
+        # Dev fallback when OPSFORGE_TOKEN_HMAC_SECRET is not configured.
+        return hashlib.sha256(raw.encode()).hexdigest()
+    key = base64.urlsafe_b64decode(secret)
+    return hmac.new(key, raw.encode(), hashlib.sha256).hexdigest()
 
 
 def generate_token() -> tuple[str, str]:
@@ -151,7 +157,7 @@ _LOOKUP_TOKEN_SQL = text(
     SELECT t.id, t.user_id, t.org_id, t.expires_at, u.role
     FROM api_tokens t
     LEFT JOIN users u ON u.id = t.user_id
-    WHERE t.token_hash = :token_hash
+    WHERE t.token_hash = :token_hash AND t.token_version = 1
     """
 )
 _TOUCH_TOKEN_SQL = text(

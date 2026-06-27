@@ -65,8 +65,8 @@ async def create_token(
         row = (
             await s.execute(
                 text(
-                    "INSERT INTO api_tokens (org_id, token_hash, name, expires_at) "
-                    "VALUES (:org, :hash, :name, :expires_at) "
+                    "INSERT INTO api_tokens (org_id, token_hash, name, expires_at, token_version) "
+                    "VALUES (:org, :hash, :name, :expires_at, 1) "
                     "RETURNING id, created_at"
                 ),
                 {

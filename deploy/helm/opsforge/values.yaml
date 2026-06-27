@@ -9,6 +9,11 @@ image:
 # In production, set this via --set-string or a pre-created Secret, not in values.
 fernetKey: ""
 
+# HMAC secret for API token hashing. Required in production.
+# Generate: python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+# Rotate independently of fernetKey; requires full (non-rolling) restart + token re-issue.
+tokenHmacSecret: ""
+
 # Optional secrets (empty disables the feature).
 webhookSecret: ""
 slackBotToken: ""

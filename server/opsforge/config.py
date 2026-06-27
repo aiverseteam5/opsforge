@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     fernet_key: str = Field(default="")
     # Shared secret for HMAC-verifying inbound alert/change webhooks.
     webhook_secret: str = Field(default="")
+    # urlsafe-base64 32-byte key for HMAC-SHA256 API token hashing.
+    # Decoupled from fernet_key so vault creds and token hashes rotate independently.
+    token_hmac_secret: str = Field(default="")
 
     org_id: str = DEFAULT_ORG_ID
 
@@ -157,6 +160,7 @@ class Settings(BaseSettings):
                 for name, val in [
                     ("OPSFORGE_WEBHOOK_SECRET", self.webhook_secret),
                     ("OPSFORGE_FERNET_KEY", self.fernet_key),
+                    ("OPSFORGE_TOKEN_HMAC_SECRET", self.token_hmac_secret),
                 ]
                 if not val
             ]
