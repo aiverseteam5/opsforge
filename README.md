@@ -30,8 +30,13 @@ separate spec.
 ## Quickstart (local stack)
 
 ```bash
-# 1. Generate a Fernet master key into .env
-python -c "from cryptography.fernet import Fernet; print('OPSFORGE_FERNET_KEY='+Fernet.generate_key().decode())" > .env
+# 1. Generate required secrets into .env
+python -c "
+from cryptography.fernet import Fernet
+import secrets
+print('OPSFORGE_FERNET_KEY=' + Fernet.generate_key().decode())
+print('OPSFORGE_WEBHOOK_SECRET=' + secrets.token_hex(32))
+" > .env
 
 # 2. Bring up db + migrate + api + 3 workers
 docker compose up -d --build

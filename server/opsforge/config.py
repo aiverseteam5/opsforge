@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Fixed single-org id for the MVP. Every row carries org_id so multi-tenancy is
@@ -116,6 +116,31 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
     environment: str = "dev"
+
+    @model_validator(mode="after")
+    def _require_secrets_in_prod(self) -> "Settings":
+        if self.environment != "dev":
+            missing = [
+                name
+                for name, val in [
+                    ("OPSFORGE_WEBHOOK_SECRET", self.webhook_secret),
+                    ("OPSFORGE_FERNET_KEY", self.fernet_key),
+                ]
+                if not val
+            ]
+            # Slack signing secret is required whenever the bot token is set —
+            # an unsigned Slack surface can accept forged trust-ladder approvals.
+            if self.slack_bot_token and not self.slack_signing_secret:
+                missing.append(
+                    "OPSFORGE_SLACK_SIGNING_SECRET "
+                    "(required when OPSFORGE_SLACK_BOT_TOKEN is set)"
+                )
+            if missing:
+                raise ValueError(
+                    f"Required env vars not set for environment={self.environment!r}: "
+                    + ", ".join(missing)
+                )
+        return self
 
 
 @lru_cache
