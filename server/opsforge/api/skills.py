@@ -100,37 +100,51 @@ async def install_skill(
 @router.get("/proposed")
 async def list_proposed(
     principal: Principal = Depends(require_token),
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
 ):
     """List codified skills awaiting human review (source=codified, enabled=false,
     not yet rejected). Registered before /{slug} to avoid route shadowing."""
+    offset = (page - 1) * page_size
+    base_where = (
+        "org_id = :org AND source = 'codified' AND enabled = false AND rejected_at IS NULL"
+    )
     async with session_factory().begin() as s:
+        total: int = (
+            await s.execute(
+                text(f"SELECT count(*) FROM skills WHERE {base_where}"),
+                {"org": principal.org_id},
+            )
+        ).scalar_one()
         rows = (
             await s.execute(
                 text(
-                    "SELECT id, slug, version, manifest, source, enabled, created_at "
-                    "FROM skills "
-                    "WHERE org_id = :org AND source = 'codified' "
-                    "AND enabled = false AND rejected_at IS NULL "
-                    "ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+                    f"SELECT id, slug, version, manifest, source, enabled, created_at "
+                    f"FROM skills WHERE {base_where} "
+                    f"ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
                 ),
-                {"org": principal.org_id, "limit": limit, "offset": offset},
+                {"org": principal.org_id, "limit": page_size, "offset": offset},
             )
         ).all()
-    return [
-        {
-            "id": str(r.id),
-            "slug": r.slug,
-            "version": r.version,
-            "name": (r.manifest or {}).get("name", r.slug),
-            "description": (r.manifest or {}).get("description", ""),
-            "source": r.source,
-            "enabled": r.enabled,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-        }
-        for r in rows
-    ]
+    return {
+        "items": [
+            {
+                "id": str(r.id),
+                "slug": r.slug,
+                "version": r.version,
+                "name": (r.manifest or {}).get("name", r.slug),
+                "description": (r.manifest or {}).get("description", ""),
+                "source": r.source,
+                "enabled": r.enabled,
+                "manifest": r.manifest,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.post("/{skill_id}/approve")

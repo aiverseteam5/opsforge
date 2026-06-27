@@ -17,11 +17,11 @@ services:
   db:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: opsforge
-      POSTGRES_PASSWORD: opsforge
-      POSTGRES_DB: opsforge
+      POSTGRES_USER: ${POSTGRES_USER:-opsforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opsforge}
+      POSTGRES_DB: ${POSTGRES_DB:-opsforge}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U opsforge -d opsforge"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-opsforge} -d ${POSTGRES_DB:-opsforge}"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -39,7 +39,7 @@ services:
     environment:
       <<: *app-env
       # superuser: alembic needs DDL + creates the opsforge_app role (0009)
-      OPSFORGE_DATABASE_URL: postgresql+psycopg://opsforge:opsforge@db:5432/opsforge
+      OPSFORGE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-opsforge}:${POSTGRES_PASSWORD:-opsforge}@db:5432/${POSTGRES_DB:-opsforge}
     depends_on:
       db:
         condition: service_healthy
@@ -50,7 +50,7 @@ services:
     environment:
       <<: *app-env
       # restricted role: RLS is enforced (cannot bypass, cannot DDL)
-      OPSFORGE_DATABASE_URL: postgresql+psycopg://opsforge_app:opsforge_app@db:5432/opsforge
+      OPSFORGE_DATABASE_URL: postgresql+psycopg://opsforge_app:${OPSFORGE_APP_PASSWORD:-opsforge_app}@db:5432/${POSTGRES_DB:-opsforge}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -68,7 +68,7 @@ services:
     environment:
       <<: *app-env
       # restricted role: RLS is enforced (cannot bypass, cannot DDL)
-      OPSFORGE_DATABASE_URL: postgresql+psycopg://opsforge_app:opsforge_app@db:5432/opsforge
+      OPSFORGE_DATABASE_URL: postgresql+psycopg://opsforge_app:${OPSFORGE_APP_PASSWORD:-opsforge_app}@db:5432/${POSTGRES_DB:-opsforge}
     depends_on:
       migrate:
         condition: service_completed_successfully

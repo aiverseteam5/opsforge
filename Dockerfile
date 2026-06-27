@@ -17,6 +17,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# Non-root user for running the application.
+RUN addgroup --system opsforge && adduser --system --ingroup opsforge opsforge
+
 # uv for fast, lockfile-consistent installs.
 RUN pip install --no-cache-dir uv
 
@@ -35,6 +38,9 @@ COPY --from=spa /spa/dist ./workbench/dist
 COPY docker/entrypoint.sh /entrypoint.sh
 # Strip any CR (Windows authoring) so /bin/sh can run the shebang, then chmod.
 RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+
+RUN chown -R opsforge:opsforge /app
+USER opsforge
 
 EXPOSE 8080
 ENTRYPOINT ["/entrypoint.sh"]

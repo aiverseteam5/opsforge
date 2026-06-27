@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # Directory of built-in skill packs (relative to the working dir).
     skills_dir: str = "skills"
 
+    # Allowed root for knowledge ingest (POST /knowledge/ingest). Paths outside
+    # this directory are rejected. Relative paths are resolved from the working dir.
+    knowledge_base_path: str = "knowledge"
+
     # Slack surface. Bot token posts reports; signing secret verifies inbound
     # events/commands. Empty in dev → posting is skipped (rendered, not sent).
     slack_bot_token: str = ""
@@ -95,9 +99,10 @@ class Settings(BaseSettings):
     # LLM credential (M7.6 Job A): production resolves the per-workspace credential from
     # the vault (llm_providers). A `.env` provider key is a LOCAL-DEV-ONLY fallback, used
     # only when this flag is on AND the workspace has no active vault provider. Production
-    # sets this False so a workspace with no credential falls to the lexical floor (never a
-    # shared global key) — LLM isolation holds per workspace.
-    dev_llm_fallback: bool = True
+    # must keep this False so a workspace with no credential falls to the lexical floor
+    # (never a shared global key) — LLM isolation holds per workspace. Set
+    # OPSFORGE_DEV_LLM_FALLBACK=true in .env for local dev only.
+    dev_llm_fallback: bool = False
 
     # Validated process (M6.4): a generated step whose grounding scores below this
     # is flagged low-confidence ("look hard") on the signoff screen.
