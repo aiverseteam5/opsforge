@@ -294,5 +294,6 @@ async def slack_interactivity(
     body = await request.body()
     _require_signature(x_slack_request_timestamp, x_slack_signature, body)
     form = dict((await request.form()).items())
-    payload = json.loads(form.get("payload", "{}"))
+    raw = form.get("payload", "{}")
+    payload = json.loads(raw if isinstance(raw, str) else "{}")
     return await _surface.on_action(payload)

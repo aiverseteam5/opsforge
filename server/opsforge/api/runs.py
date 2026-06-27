@@ -130,7 +130,7 @@ async def cancel_run(run_id: UUID, principal: Principal = Depends(require_token)
             ),
             {"id": run_id, "org": principal.org_id},
         )
-    if res.rowcount == 0:
+    if res.rowcount == 0:  # type: ignore[attr-defined]
         raise HTTPException(status_code=409, detail="run not cancellable")
     return {"status": "cancelled"}
 

@@ -588,7 +588,7 @@ class LexicalDetector:
                 if not tb or not td:
                     continue
                 jaccard = len(tb & td) / len(tb | td)
-                rel = "agrees" if jaccard >= self.overlap_threshold else "contradicts"
+                rel: Relation = "agrees" if jaccard >= self.overlap_threshold else "contradicts"
                 rels.append(ClaimRelation(b.id, d.id, rel))
         return rels
 

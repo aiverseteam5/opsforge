@@ -126,6 +126,8 @@ async def list_connectors(principal: Principal = Depends(require_token)):
 async def create_connector(
     body: ConnectorCreate, principal: Principal = Depends(require_token)
 ):
+    if principal.role not in ("admin",):
+        raise HTTPException(status_code=403, detail="connector management requires admin role")
     # Fail CLOSED: a credential-bearing connector must not be created (and flip to
     # 'connected') with an empty vault. Reachability alone is not a configured credential.
     if requires_credential(body.kind) and not body.credentials:
@@ -282,6 +284,8 @@ async def update_connector(
     """Edit an existing connector's config and/or rotate its credential. Org-scoped (the
     A1.5 FORCE-RLS net + scope_to_org + explicit predicate); a write can only ever touch the
     caller's own workspace. The credential is write-only and never returned/audited."""
+    if principal.role not in ("admin",):
+        raise HTTPException(status_code=403, detail="connector management requires admin role")
     existing = await load_connector(connector_id, principal.org_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="connector not found")
@@ -356,6 +360,8 @@ async def update_connector(
 async def delete_connector(
     connector_id: UUID, principal: Principal = Depends(require_token)
 ):
+    if principal.role not in ("admin",):
+        raise HTTPException(status_code=403, detail="connector management requires admin role")
     async with session_factory().begin() as s:
         await scope_to_org(s, principal.org_id)
         res = await s.execute(
@@ -364,5 +370,5 @@ async def delete_connector(
             ),
             {"id": connector_id, "org": principal.org_id},
         )
-    if res.rowcount == 0:
+    if res.rowcount == 0:  # type: ignore[attr-defined]
         raise HTTPException(status_code=404, detail="connector not found")

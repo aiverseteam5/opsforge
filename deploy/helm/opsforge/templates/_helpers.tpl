@@ -28,6 +28,8 @@ postgresql+psycopg://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}
 
 {{/* Shared OPSFORGE_* env for api + worker + migrate. */}}
 {{- define "opsforge.env" -}}
+- name: OPSFORGE_ENVIRONMENT
+  value: "production"
 - name: OPSFORGE_DATABASE_URL
   value: {{ include "opsforge.databaseUrl" . | quote }}
 - name: OPSFORGE_MODEL

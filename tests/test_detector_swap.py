@@ -130,7 +130,7 @@ async def _cleanup(org):
             await s.execute(text(f"DELETE FROM {t} WHERE org_id=:o"), {"o": org})
 
 
-async def test_fallback_reconciliation_is_recorded_degraded():
+async def test_fallback_reconciliation_is_recorded_degraded(db_required: None):
     org, pk = str(uuid.uuid4()), "p"
     try:
         await _seed(org, pk, "behaviour", "we skip the review step entirely", "obs://x")
@@ -143,7 +143,7 @@ async def test_fallback_reconciliation_is_recorded_degraded():
         await _cleanup(org)
 
 
-async def test_healthy_llm_reconciliation_records_llm():
+async def test_healthy_llm_reconciliation_records_llm(db_required: None):
     org, pk = str(uuid.uuid4()), "p"
     try:
         await _seed(org, pk, "behaviour", "we kill sessions", "obs://a")
@@ -160,7 +160,7 @@ async def test_healthy_llm_reconciliation_records_llm():
 # --------------------------------------------------------------------------- #
 # the safety invariants still hold with the detector live / degraded
 # --------------------------------------------------------------------------- #
-async def test_gate_fires_under_fallback_on_weak_grounding():
+async def test_gate_fires_under_fallback_on_weak_grounding(db_required: None):
     """M6.5 holds even when reconciliation fell back: weak grounding still routes a
     consequential action to the human gate. The gate's firing depends on rank/
     freshness, NOT on contradiction detection, so fallback under-detection can't
@@ -191,7 +191,7 @@ async def test_gate_fires_under_fallback_on_weak_grounding():
         await _cleanup(org)
 
 
-async def test_fallback_agree_cannot_lift_weak_chunk_past_gate():
+async def test_fallback_agree_cannot_lift_weak_chunk_past_gate(db_required: None):
     """The lexical floor proposes 'agrees' on token overlap, and a behaviour/document
     pair always has DISTINCT roots — so without a guard M7.2 would count it as a
     legitimate corroboration lift. A weak chunk reconciled under fallback must STAY
@@ -231,7 +231,7 @@ async def test_fallback_agree_cannot_lift_weak_chunk_past_gate():
         await _cleanup(org)
 
 
-async def test_fallback_missed_contradiction_cannot_raise_stored_confidence():
+async def test_fallback_missed_contradiction_cannot_raise_stored_confidence(db_required: None):
     """A healthy LLM run finds a contradiction and scores a chunk below the gate; a
     later degraded run that is BLIND to it (doc↔doc, which the lexical floor can't
     see) must not overwrite that with a higher score. The fallback write is
@@ -255,7 +255,7 @@ async def test_fallback_missed_contradiction_cannot_raise_stored_confidence():
         await _cleanup(org)
 
 
-async def test_same_root_duplication_zero_lift_with_llm_asserting_agreement():
+async def test_same_root_duplication_zero_lift_with_llm_asserting_agreement(db_required: None):
     """M7.2 holds with the REAL detector as the asserter: the LLM densely asserts
     agreement across three restatements of ONE source, yet same-root duplication
     lifts nothing — the engine's distinct-root counting zeroes it."""

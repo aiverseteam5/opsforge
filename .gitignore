@@ -18,6 +18,9 @@ workbench/dist/
 *.log
 .DS_Store
 
+# gstack artifacts (local only — security reports, session data)
+.gstack/
+
 # Vite/TS build artifacts
 workbench/*.tsbuildinfo
 workbench/vite.config.d.ts

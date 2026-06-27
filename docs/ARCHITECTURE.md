@@ -494,6 +494,39 @@ Anything not in §14 is out.
 
 ---
 
+## M6 — Knowledge & Truth Plane (shipped, post-spec)
+
+M6 was not in the original M0→M5 spec. It grew out of a hard lesson from M5:
+the agent loop was retrieving conflicting or stale facts from different connectors
+with no principled way to reconcile them. An action proposed on outdated topology
+can be worse than no action. M6 solves this.
+
+**What it adds (~1 750 lines):**
+
+| Module | Role |
+|---|---|
+| `knowledge.py` | Chunk store: every ingestable fact is a typed, source-ranked, timestamped chunk in `knowledge_chunks` (pgvector). |
+| `confidence.py` | Deterministic confidence formula: `clamp01(w_source·rank + w_fresh·decay(age) + w_corroborate·sat(N_agree) − w_contradict·sat(N_conflict))`. Weights live in `config.py`, not code. |
+| `reconcile.py` + `reconciliations.py` | Conflict detection and resolution: two chunks that contradict each other within the same topic are surfaced as a `reconciliation` row. Auto-resolved (superseded) when the newer chunk is ≥ `reconcile_staleness_days` fresher AND same source kind; otherwise escalated for human review. |
+| `processes.py` + `findings.py` | Validated runbook steps and per-run grounding findings: each step carries a confidence score; steps below `validated_process_low_confidence_threshold` are flagged "look hard" at sign-off. |
+| `dispositions.py` | Disposition record for resolved reconciliations (human-accepted, auto-superseded, or dismissed). |
+| `knowledge_sources.py` | Per-connector ingest adapters that normalise raw MCP tool output into typed chunks with provenance and source rank. |
+
+**Why it's a product moat, not scope creep:**
+OpsForge's trust ladder only works if the agent acts on correct information.
+Confidence-gated actions (`context_grounding_threshold`) and reconciliation
+before execution are what separate OpsForge from a script with an LLM bolted on.
+Competitors (PagerDuty, Datadog AI) act on raw telemetry with no epistemic layer.
+
+**Acceptance criteria (complete):**
+- `knowledge_chunks` ingested on every graph sync (connector → source adapter → chunk store)
+- Confidence scores attached to every `action` proposal row before policy evaluation
+- Conflicting chunks produce `reconciliation` rows; auto-resolution triggers on staleness rule
+- Agent loop gates consequential actions: if best-available confidence < `context_grounding_threshold`, force human approval regardless of trust ladder level
+- 100% test coverage of confidence formula and reconciliation logic (deterministic, no LLM involvement)
+
+---
+
 ## Implementation decisions (build-time, not in original spec)
 
 These resolve ambiguities in the spec; recorded here so they survive sessions.
