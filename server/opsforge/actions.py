@@ -42,16 +42,16 @@ class ActionError(RuntimeError):
     pass
 
 
-async def _load_action(action_id: UUID) -> dict[str, Any] | None:
+async def _load_action(action_id: UUID, org_id: UUID) -> dict[str, Any] | None:
     async with session_factory().begin() as s:
         row = (
             await s.execute(
                 text(
                     "SELECT id, org_id, run_id, skill_id, action_class, tool, params, "
                     "target_ref, rollback, state, policy_trace, approved_by "
-                    "FROM actions WHERE id = :id"
+                    "FROM actions WHERE id = :id AND org_id = :org"
                 ),
-                {"id": action_id},
+                {"id": action_id, "org": org_id},
             )
         ).first()
     return dict(row._mapping) if row else None
@@ -113,10 +113,12 @@ def _require_policy_trace(action: dict[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 # Human-driven transitions (called from the API)
 # --------------------------------------------------------------------------- #
-async def approve_action(action_id: UUID, *, actor_role: str | None, actor: str) -> dict[str, Any]:
+async def approve_action(
+    action_id: UUID, *, org_id: UUID, actor_role: str | None, actor: str
+) -> dict[str, Any]:
     if actor_role not in _APPROVER_ROLES:
         raise ActionError("approval requires role admin or operator")
-    action = await _load_action(action_id)
+    action = await _load_action(action_id, org_id)
     if action is None:
         raise ActionError("action not found")
     _require_policy_trace(action)
@@ -149,8 +151,8 @@ async def approve_action(action_id: UUID, *, actor_role: str | None, actor: str)
     return {"state": "approved", "id": str(action_id)}
 
 
-async def deny_action(action_id: UUID, *, actor: str) -> dict[str, Any]:
-    action = await _load_action(action_id)
+async def deny_action(action_id: UUID, *, org_id: UUID, actor: str) -> dict[str, Any]:
+    action = await _load_action(action_id, org_id)
     if action is None:
         raise ActionError("action not found")
     if not await _transition(action_id, action["state"], "denied"):
@@ -159,9 +161,9 @@ async def deny_action(action_id: UUID, *, actor: str) -> dict[str, Any]:
     return {"state": "denied", "id": str(action_id)}
 
 
-async def dry_run_action(action_id: UUID, *, actor: str) -> dict[str, Any]:
+async def dry_run_action(action_id: UUID, *, org_id: UUID, actor: str) -> dict[str, Any]:
     """Render the exact tool + params + target WITHOUT calling any mutating tool."""
-    action = await _load_action(action_id)
+    action = await _load_action(action_id, org_id)
     if action is None:
         raise ActionError("action not found")
     _require_policy_trace(action)

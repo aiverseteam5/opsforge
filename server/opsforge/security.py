@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import re
 import secrets
+from datetime import UTC, datetime
 from typing import Any
 
 from cryptography.fernet import Fernet
@@ -140,7 +141,7 @@ class Principal:
 
 _LOOKUP_TOKEN_SQL = text(
     """
-    SELECT t.user_id, t.org_id, u.role
+    SELECT t.user_id, t.org_id, t.expires_at, u.role
     FROM api_tokens t
     LEFT JOIN users u ON u.id = t.user_id
     WHERE t.token_hash = :token_hash
@@ -168,6 +169,12 @@ async def require_token(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
+    if row.expires_at is not None:
+        expires = row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=UTC)
+        if expires < datetime.now(UTC):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
+            )
     # Best-effort touch; never block auth on it.
     await session.execute(_TOUCH_TOKEN_SQL, {"token_hash": token_hash})
     await session.commit()

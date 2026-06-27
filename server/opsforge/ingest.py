@@ -241,9 +241,18 @@ async def ingest_directory(
     embedder: Embedder | None = None,
     source_kind: KnowledgeSourceKind = "document",
 ) -> dict[str, Any]:
-    """Ingest every `*.md` under a folder. Returns a summary {files, chunks}."""
+    """Ingest every `*.md` under a folder. Returns a summary {files, chunks}.
+
+    The resolved path must fall within OPSFORGE_KNOWLEDGE_BASE_PATH; requests
+    outside that root are rejected to prevent filesystem traversal by operators.
+    """
+    allowed_root = Path(get_settings().knowledge_base_path).resolve()
+    root = Path(folder).resolve()
+    if not str(root).startswith(str(allowed_root) + "/") and root != allowed_root:
+        raise ValueError(
+            f"ingest path {root} is outside the allowed knowledge root {allowed_root}"
+        )
     embed = embedder or default_embedder()
-    root = Path(folder)
     files = sorted(root.rglob("*.md"))
     all_ids: list[UUID] = []
     for path in files:

@@ -263,13 +263,16 @@ class SlackSurface:
             aid = UUID(action_id_raw)
         except (ValueError, TypeError):
             return {"ok": False, "error": "bad action id"}
+        slack_org_id = UUID(get_settings().org_id)
         try:
             if choice == "approve":
-                return await approve_action(aid, actor_role="operator", actor=actor)
+                return await approve_action(
+                    aid, org_id=slack_org_id, actor_role="operator", actor=actor
+                )
             if choice == "dry_run":
-                return await dry_run_action(aid, actor=actor)
+                return await dry_run_action(aid, org_id=slack_org_id, actor=actor)
             if choice == "deny":
-                return await deny_action(aid, actor=actor)
+                return await deny_action(aid, org_id=slack_org_id, actor=actor)
         except Exception as exc:  # noqa: BLE001 - surface a friendly ack
             return {"ok": False, "error": str(exc)}
         return {"ok": True}
