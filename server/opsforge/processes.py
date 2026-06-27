@@ -277,7 +277,7 @@ async def sign_off_process(
                 "o": str(org_id),
             },
         )
-        if res.rowcount != 1:
+        if res.rowcount != 1:  # type: ignore[attr-defined]
             raise ValueError("process not found or not in 'draft' state")
     await record_audit(
         org_id,

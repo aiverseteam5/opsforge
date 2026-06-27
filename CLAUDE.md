@@ -108,3 +108,10 @@ Key routing rules:
 - Code review/diff check → invoke /review
 - Ship/deploy/PR → invoke /ship or /land-and-deploy
 - Security audit → invoke /cso
+
+## Health Stack
+
+- typecheck: mypy server
+- lint: ruff check .
+- importlint: lint-imports
+- test: pytest

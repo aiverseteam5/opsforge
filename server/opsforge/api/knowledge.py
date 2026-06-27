@@ -9,6 +9,7 @@ the RLS org context, so isolation is enforced by the DB (M6.6).
 
 from __future__ import annotations
 
+from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -110,7 +111,7 @@ async def get_findings(
     `state` filters one lifecycle state; "all" (or empty) means NO filter — every
     state. (An empty string must NOT become a `state = ''` predicate, which would
     match nothing and dishonestly show an empty mirror.)"""
-    eff_state = None if state in ("all", "") else state
+    eff_state = None if state in ("all", "", None) else cast(FindingState, state)
     rows = await list_findings(principal.org_id, state=eff_state, process_key=process_key)
     return [r.model_dump(mode="json") for r in rows]
 

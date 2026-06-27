@@ -64,7 +64,7 @@ def _empty_delta() -> GraphDelta:
 async def map_kubernetes(cs: ConnectorSession) -> GraphDelta:
     delta = _empty_delta()
     namespaces: set[str] = set()
-    services: set[str] = set()
+    services: set[tuple[str, str]] = set()
 
     nodes = await _safe_call(cs, "kubernetes.list_nodes", {})
     for n in nodes or []:

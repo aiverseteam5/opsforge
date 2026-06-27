@@ -79,7 +79,7 @@ async def _transition(
             ),
             params,
         )
-    return res.rowcount == 1
+    return res.rowcount == 1  # type: ignore[attr-defined]
 
 
 async def _audit(

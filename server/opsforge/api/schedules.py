@@ -143,7 +143,7 @@ async def update_schedule(
             ),
             params,
         )
-    if res.rowcount == 0:
+    if res.rowcount == 0:  # type: ignore[attr-defined]
         raise HTTPException(status_code=404, detail="schedule not found")
     return {"status": "updated"}
 
@@ -157,5 +157,5 @@ async def delete_schedule(
             text("DELETE FROM schedules WHERE id=:id AND org_id=:org"),
             {"id": schedule_id, "org": principal.org_id},
         )
-    if res.rowcount == 0:
+    if res.rowcount == 0:  # type: ignore[attr-defined]
         raise HTTPException(status_code=404, detail="schedule not found")

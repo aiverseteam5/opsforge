@@ -370,5 +370,5 @@ async def delete_connector(
             ),
             {"id": connector_id, "org": principal.org_id},
         )
-    if res.rowcount == 0:
+    if res.rowcount == 0:  # type: ignore[attr-defined]
         raise HTTPException(status_code=404, detail="connector not found")

@@ -57,6 +57,9 @@ ignore = ["B008"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["server", "evals"]
+# ROS Kilted injects itself into PYTHONPATH on this host; block its pytest
+# plugins which fail to load (missing 'lark' dep) and halt collection.
+addopts = "-p no:launch_testing -p no:launch_ros"
 
 [tool.mypy]
 python_version = "3.12"

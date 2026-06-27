@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     environment: str = "dev"
 
     @model_validator(mode="after")
-    def _require_secrets_in_prod(self) -> "Settings":
+    def _require_secrets_in_prod(self) -> Settings:
         if self.environment != "dev":
             missing = [
                 name
