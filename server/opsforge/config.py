@@ -117,6 +117,20 @@ class Settings(BaseSettings):
     # the worker asserts this at startup to catch dim-mismatch before writes fail.
     embedding_dimension: int = 1536
 
+    # Webhook rate limiting: sliding-window per source IP.
+    # Applied to all /api/v1/webhooks/* routes (alert, change, Slack).
+    webhook_rate_limit_requests: int = 120  # requests allowed per window
+    webhook_rate_limit_window_s: int = 60   # window size in seconds
+
+    # Run dispatch rate limiting: sliding-window per API token (F6 — LLM cost guard).
+    run_dispatch_rate_limit_requests: int = 60   # dispatches allowed per window
+    run_dispatch_rate_limit_window_s: int = 60   # window size in seconds
+
+    # JIT credential leases: default TTL for minted credentials (seconds).
+    # Individual providers may issue shorter-lived credentials; this is the cap
+    # used when the provider config omits duration_seconds.
+    jit_lease_ttl_s: int = 3600
+
     # Worker queue loop.
     worker_poll_interval_ms: int = 500
     worker_max_attempts: int = 5

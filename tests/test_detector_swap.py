@@ -64,8 +64,14 @@ class _Chunk:
 async def test_configured_detector_dev_fallback_when_keyed(monkeypatch):
     # No org provider configured → the LOCAL-DEV env fallback (dev_llm_fallback on) builds
     # the LLM detector from the env key. This is NOT the production path.
+    from opsforge.config import get_settings
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    assert isinstance(await configured_detector(), LLMDetector)
+    monkeypatch.setenv("OPSFORGE_DEV_LLM_FALLBACK", "true")
+    get_settings.cache_clear()
+    try:
+        assert isinstance(await configured_detector(), LLMDetector)
+    finally:
+        get_settings.cache_clear()
 
 
 async def test_configured_detector_is_lexical_floor_without_key(monkeypatch):

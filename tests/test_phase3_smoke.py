@@ -17,19 +17,18 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import conftest
 import pytest
 from sqlalchemy import text
 
-import conftest
 from opsforge.config import DEFAULT_ORG_ID
 from opsforge.db import session_factory
 from opsforge.gateway import ChatResult, ToolCall
-from opsforge.security import generate_token, hash_token
+from opsforge.security import generate_token
 
 # DB-backed tests carry db_required via auth_headers or an explicit param.
 # Pure-unit tests (Slack notify, ingest guard) carry no DB marker.
@@ -374,7 +373,6 @@ async def test_ingest_path_traversal_blocked():
 
 async def test_ingest_path_prefix_bypass_blocked(tmp_path):
     """'knowledgebase' must not match when root is 'knowledge'."""
-    import os
     from opsforge.ingest import ingest_directory
 
     # Create a sibling dir that starts with the allowed root name

@@ -64,7 +64,9 @@ class LiteLLMGateway:
     ) -> ChatResult:
         import litellm
 
-        effective_tool_choice = tool_choice if tool_choice is not None else ("auto" if tools else None)
+        effective_tool_choice = (  # noqa: E501
+            tool_choice if tool_choice is not None else ("auto" if tools else None)
+        )
         resp = await litellm.acompletion(
             model=model,
             messages=messages,

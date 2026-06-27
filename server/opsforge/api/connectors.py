@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import os
+import shlex
+import urllib.parse
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
@@ -19,11 +23,75 @@ from ..connectors import (
     load_connector,
     record_health,
 )
+from ..credentials import CredentialKind as CredKind
+from ..credentials import oidc_config_for_create
 from ..db import record_audit, scope_to_org, session_factory
 from ..ops_model import load_starter_mapping, validate_mapping
 from ..security import Principal, encrypt, require_token
 
 router = APIRouter(prefix="/api/v1/connectors", tags=["connectors"])
+
+# Shells and interpreters that must not be used as stdio connector commands
+# with an arbitrary -c / --exec style flag (prevents RCE via connector create).
+_BLOCKED_COMMANDS = frozenset({
+    "sh", "bash", "zsh", "dash", "ksh", "fish",
+    "perl", "ruby", "lua", "tclsh",
+})
+
+# Private + link-local IP ranges blocked for HTTP connectors (SSRF / IMDS).
+_PRIVATE_NETS = [
+    ipaddress.ip_network(r) for r in (
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+        "127.0.0.0/8", "169.254.0.0/16",          # AWS IMDS
+        "100.64.0.0/10",                            # CGNAT
+        "::1/128", "fc00::/7", "fe80::/10",
+    )
+]
+
+
+def _validate_stdio_endpoint(endpoint: str) -> None:
+    """Reject shell -c / arbitrary-command patterns in stdio connector endpoints."""
+    try:
+        argv = shlex.split(endpoint, posix=False)
+    except ValueError as exc:
+        raise ValueError(f"unparseable endpoint: {exc}") from exc
+    if not argv:
+        raise ValueError("endpoint must not be empty")
+    # Blocked: bare shell or interpreter with a -c / --eval flag anywhere in argv.
+    cmd = os.path.basename(argv[0]).lower()
+    if cmd in _BLOCKED_COMMANDS:
+        if any(a in ("-c", "--eval", "--execute", "-e") for a in argv[1:]):
+            raise ValueError(
+                f"shell/interpreter with -c is not permitted as a connector command: {cmd}"
+            )
+    # Block any argv that starts with -c (catches e.g. "/bin/sh -c ...")
+    if len(argv) > 1 and argv[1] in ("-c", "--eval", "--execute", "-e"):
+        raise ValueError("connector endpoint may not use -c (arbitrary command execution)")
+
+
+def _validate_http_endpoint(endpoint: str, *, environment: str = "dev") -> None:
+    """Reject non-http(s) schemes and private-IP ranges (SSRF / IMDS protection)."""
+    try:
+        parsed = urllib.parse.urlparse(endpoint)
+    except Exception as exc:
+        raise ValueError(f"invalid URL: {exc}") from exc
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("HTTP connector endpoint must use http or https scheme")
+    if environment != "dev" and parsed.scheme == "http":
+        raise ValueError("http scheme is not allowed in production; use https")
+    hostname = parsed.hostname or ""
+    try:
+        addr = ipaddress.ip_address(hostname)
+        for net in _PRIVATE_NETS:
+            if addr in net:
+                raise ValueError(
+                    f"connector endpoint resolves to a reserved/private address: {addr}"
+                )
+    except ValueError as exc:
+        # ip_address() raises for hostnames; re-raise only our own private-IP errors.
+        if "reserved" in str(exc) or "private" in str(exc):
+            raise
+
 
 ConnectorKind = Literal[
     "aws", "kubernetes", "datadog", "servicenow", "jira", "pagerduty", "slack",
@@ -76,8 +144,12 @@ class ConnectorCreate(BaseModel):
     # Declarative native→canonical map (ops connectors). Defaults to the kind's
     # starter pack when omitted; editable later via PUT /{id}/mapping.
     field_mapping: dict | None = None
-    # Secret env vars (stdio) or headers (http). Encrypted at rest; never returned.
+    # Static credential: env vars (stdio) or headers (http). Encrypted at rest; never returned.
     credentials: dict[str, str] | None = None
+    # JIT credential kind. Defaults to "static" (uses `credentials` field above).
+    credential_kind: CredKind = "static"
+    # JIT provider config (role ARN, Vault address, etc.). Write-only like credentials.
+    oidc_config: dict[str, str] | None = None
 
 
 class ConnectorOut(BaseModel):
@@ -87,6 +159,7 @@ class ConnectorOut(BaseModel):
     transport: str
     endpoint: str
     tool_allowlist: list[str]
+    credential_kind: str
     field_mapping: dict | None
     discovered_schema: dict | None
     status: str
@@ -101,8 +174,8 @@ class TestResult(BaseModel):
 
 
 _SELECT_COLS = (
-    "id, name, kind, transport, endpoint, tool_allowlist, field_mapping, "
-    "discovered_schema, status, last_health_at, created_at"
+    "id, name, kind, transport, endpoint, tool_allowlist, credential_kind, "
+    "field_mapping, discovered_schema, status, last_health_at, created_at"
 )
 
 
@@ -128,6 +201,16 @@ async def create_connector(
 ):
     if principal.role not in ("admin",):
         raise HTTPException(status_code=403, detail="connector management requires admin role")
+    # Endpoint security validation (F1/F4).
+    from ..config import get_settings as _gs
+    _env = _gs().environment
+    try:
+        if body.transport == "stdio":
+            _validate_stdio_endpoint(body.endpoint)
+        else:
+            _validate_http_endpoint(body.endpoint, environment=_env)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     # Fail CLOSED: a credential-bearing connector must not be created (and flip to
     # 'connected') with an empty vault. Reachability alone is not a configured credential.
     if requires_credential(body.kind) and not body.credentials:
@@ -137,6 +220,7 @@ async def create_connector(
         )
     body = _map_knowledge_connector(body)
     creds_enc = encrypt(json.dumps(body.credentials)) if body.credentials else None
+    oidc_enc = oidc_config_for_create(body.credential_kind, body.oidc_config)
     # Default an ops connector's mapping to the bundled starter pack for its kind.
     mapping = body.field_mapping or load_starter_mapping(body.kind)
     async with session_factory().begin() as s:
@@ -146,8 +230,10 @@ async def create_connector(
                 text(
                     "INSERT INTO connectors "
                     "(org_id, name, kind, transport, endpoint, credentials_enc, "
+                    " credential_kind, oidc_config_enc, "
                     " tool_allowlist, field_mapping, status) "
                     "VALUES (:org, :name, :kind, :transport, :endpoint, :creds, "
+                    " :cred_kind, :oidc_enc, "
                     " CAST(:allow AS jsonb), CAST(:mapping AS jsonb), 'unknown') "
                     f"RETURNING {_SELECT_COLS}"
                 ),
@@ -158,6 +244,8 @@ async def create_connector(
                     "transport": body.transport,
                     "endpoint": body.endpoint,
                     "creds": creds_enc,
+                    "cred_kind": body.credential_kind,
+                    "oidc_enc": oidc_enc,
                     "allow": json.dumps(body.tool_allowlist),
                     "mapping": json.dumps(mapping) if mapping else None,
                 },
@@ -273,6 +361,9 @@ class ConnectorUpdate(BaseModel):
     # the existing one. Write-only — the stored credential is never returned, so the form
     # sends a fresh secret or nothing. The old value is never displayed or echoed.
     credentials: dict[str, str] | None = None
+    # JIT: supply both to rotate the OIDC provider config.
+    credential_kind: CredKind | None = None
+    oidc_config: dict[str, str] | None = None
 
 
 @router.patch("/{connector_id}", response_model=ConnectorOut)
@@ -289,6 +380,18 @@ async def update_connector(
     existing = await load_connector(connector_id, principal.org_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="connector not found")
+    # Endpoint security validation on updates (F1/F4).
+    if body.endpoint is not None:
+        from ..config import get_settings as _gs
+        _env = _gs().environment
+        _transport = existing.get("transport", "http")
+        try:
+            if _transport == "stdio":
+                _validate_stdio_endpoint(body.endpoint)
+            else:
+                _validate_http_endpoint(body.endpoint, environment=_env)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     # For a shipped knowledge connector (Confluence) the form's `endpoint` is the BASE URL
     # (a vault env value) and the form keys (api_key/space) are the env keys the MCP server
     # reads — NOT the connector endpoint (which is the fixed spawn command). The SAME mapping
@@ -322,10 +425,22 @@ async def update_connector(
         merged = {**_decrypt_credentials(existing.get("credentials_enc")), **incoming}
         sets.append("credentials_enc = :creds")
         params["creds"] = encrypt(json.dumps(merged))
+    # JIT credential kind + OIDC config rotation (write-only, same rules as credentials).
+    if body.credential_kind is not None:
+        sets.append("credential_kind = :cred_kind")
+        params["cred_kind"] = body.credential_kind
+    if body.oidc_config:
+        sets.append("oidc_config_enc = :oidc_enc")
+        params["oidc_enc"] = oidc_config_for_create(
+            body.credential_kind or existing.get("credential_kind", "static"),
+            body.oidc_config,
+        )
+        credential_rotated = True
+
     # A connectivity-affecting change (endpoint/base-url or credential) INVALIDATES the prior
     # health verdict — reset to 'unknown' so the badge stops claiming 'connected' until a
     # fresh test. (A name/allowlist-only edit leaves the verdict intact.)
-    if body.endpoint is not None or incoming:
+    if body.endpoint is not None or incoming or body.oidc_config:
         sets.append("status = 'unknown'")
     async with session_factory().begin() as s:
         await scope_to_org(s, principal.org_id)

@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import text
 
 from .config import get_settings
-from .db import enqueue, record_audit, session_factory
+from .db import enqueue, record_audit, scope_to_org, session_factory
 from .skills import get_skill, list_skills
 
 _OPS_KINDS = ("servicenow", "jira", "pagerduty")
@@ -47,6 +47,7 @@ async def _insert_run(
         "user_id": user_id,
     }
     async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
         run_id = (
             await s.execute(
                 text(
@@ -208,6 +209,7 @@ async def dispatch_from_alert(alert: dict[str, Any]) -> list[dict[str, Any]]:
     for each match, reporting to the schedule's configured surface."""
     org_id = get_settings().org_id
     async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
         schedules = (
             await s.execute(
                 text(
@@ -241,6 +243,7 @@ async def dispatch_from_alert(alert: dict[str, Any]) -> list[dict[str, Any]]:
             model=None,
         )
         async with session_factory().begin() as s:
+            await scope_to_org(s, org_id)
             await s.execute(
                 text("UPDATE schedules SET last_run_id=:r WHERE id=:id"),
                 {"r": run_id, "id": sched.id},

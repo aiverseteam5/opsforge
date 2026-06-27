@@ -260,6 +260,7 @@ async def append_run_event(
 ) -> int:
     """Append one event to a run's stream. Payload must already be redacted."""
     async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
         return (
             await s.execute(
                 _APPEND_EVENT_SQL,
@@ -291,6 +292,7 @@ async def record_audit(
 ) -> None:
     """Append an immutable audit entry. Actor is user:<id> | system:<x> | agent:<run>."""
     async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
         await s.execute(
             _AUDIT_SQL,
             {

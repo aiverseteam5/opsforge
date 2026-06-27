@@ -25,8 +25,9 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 from sqlalchemy import text
 
+from .credentials import resolve as resolve_credentials
 from .db import append_run_event, scope_to_org, session_factory
-from .security import decrypt, redact
+from .security import redact
 
 
 class ConnectorError(RuntimeError):
@@ -34,6 +35,8 @@ class ConnectorError(RuntimeError):
 
 
 def _decrypt_credentials(credentials_enc: bytes | None) -> dict[str, str]:
+    """Decrypt static Fernet credentials. Used only for credential merging in the API layer."""
+    from .security import decrypt
     if not credentials_enc:
         return {}
     raw = decrypt(credentials_enc)
@@ -145,13 +148,17 @@ class ConnectorSession:
 
 
 @asynccontextmanager
-async def open_connector(connector: dict[str, Any]) -> AsyncIterator[ConnectorSession]:
+async def open_connector(
+    connector: dict[str, Any],
+    run_id: UUID | None = None,
+) -> AsyncIterator[ConnectorSession]:
     """Open and initialize an MCP session for a connector row (as a dict).
 
-    Credentials are decrypted here and injected into the server env (stdio) or
-    request headers (http) at spawn time only.
+    Credentials are resolved here (static → Fernet decrypt; JIT → minted at
+    spawn) and injected into the server env (stdio) or request headers (http).
+    The materialised secret never leaves this function.
     """
-    creds = _decrypt_credentials(connector.get("credentials_enc"))
+    creds = await resolve_credentials(connector, run_id=run_id)
     transport = connector["transport"]
     endpoint = connector["endpoint"]
 

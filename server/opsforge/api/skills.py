@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from ..config import get_settings
-from ..db import record_audit, session_factory
+from ..db import record_audit, scope_to_org, session_factory
 from ..security import Principal, require_token
 from ..skills import (
     SkillValidationError,
@@ -115,6 +115,7 @@ async def list_proposed(
         "org_id = :org AND source = 'codified' AND enabled = false AND rejected_at IS NULL"
     )
     async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)
         total: int = (
             await s.execute(
                 text(f"SELECT count(*) FROM skills WHERE {base_where}"),
@@ -164,6 +165,7 @@ async def approve_skill(
     """
     _require_writer(principal)
     async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)
         result = await s.execute(
             text(
                 "UPDATE skills SET enabled = true, updated_at = now(), "
@@ -197,6 +199,7 @@ async def reject_skill(
     """
     _require_writer(principal)
     async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)
         result = await s.execute(
             text(
                 "UPDATE skills SET rejected_at = now(), updated_at = now(), "
@@ -259,6 +262,7 @@ async def graduate_tool(
 
     min_runs = get_settings().graduation_min_executions
     async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)
         clean = (
             await s.execute(
                 text(

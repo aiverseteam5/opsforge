@@ -31,6 +31,10 @@ dev = [
     "mypy>=1.13",
     "import-linter>=2.1",
 ]
+# JIT cloud credentials: install when using oidc_aws connectors.
+cloud = [
+    "boto3>=1.35",
+]
 
 [project.scripts]
 opsforge = "opsforge.cli:main"

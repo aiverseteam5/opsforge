@@ -137,6 +137,9 @@ class ApiToken(PkMixin, OrgMixin, Base):
     last_used_at: Mapped[datetime.datetime | None] = mapped_column()
 
 
+CredentialKind = Literal["static", "oidc_aws", "vault_approle"]
+
+
 class Connector(PkMixin, OrgMixin, Base):
     __tablename__ = "connectors"
     name: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -144,6 +147,10 @@ class Connector(PkMixin, OrgMixin, Base):
     transport: Mapped[str] = mapped_column(String(20), nullable=False)
     endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     credentials_enc: Mapped[bytes | None] = mapped_column(BYTEA)
+    credential_kind: Mapped[str] = mapped_column(
+        String(30), nullable=False, server_default="static"
+    )
+    oidc_config_enc: Mapped[bytes | None] = mapped_column(BYTEA)
     tool_allowlist: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
@@ -162,6 +169,20 @@ class Connector(PkMixin, OrgMixin, Base):
             "kind",
         ),
         _enum_ck("transport", ("stdio", "http"), "transport"),
+        _enum_ck("credential_kind", ("static", "oidc_aws", "vault_approle"), "credential_kind"),
+    )
+
+
+class CredentialLease(PkMixin, OrgMixin, Base):
+    __tablename__ = "credential_leases"
+    connector_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    issued_at: Mapped[datetime.datetime] = mapped_column(server_default=text("now()"))
+    expires_at: Mapped[datetime.datetime] = mapped_column(nullable=False)
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column()
+    lease_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
 
 
@@ -639,4 +660,5 @@ ALL_TABLES: tuple[str, ...] = (
     "llm_providers",
     "conversations",
     "messages",
+    "credential_leases",
 )

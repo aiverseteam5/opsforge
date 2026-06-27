@@ -32,9 +32,19 @@ def test_verify_signature_roundtrip(monkeypatch):
 def test_verify_signature_skipped_without_secret(monkeypatch):
     class S:
         slack_signing_secret = ""
+        environment = "dev"
 
     monkeypatch.setattr(slack, "get_settings", lambda: S())
     assert slack.verify_signature(None, None, b"x") is True
+
+
+def test_verify_signature_rejected_in_prod_without_secret(monkeypatch):
+    class S:
+        slack_signing_secret = ""
+        environment = "production"
+
+    monkeypatch.setattr(slack, "get_settings", lambda: S())
+    assert slack.verify_signature(None, None, b"x") is False
 
 
 def test_render_report_blocks_has_approval_buttons():

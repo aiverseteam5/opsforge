@@ -11,4 +11,4 @@ def test_all_expected_tables_present():
 
 
 def test_table_count():
-    assert len(ALL_TABLES) == 23
+    assert len(ALL_TABLES) == 24

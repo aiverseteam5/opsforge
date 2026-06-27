@@ -9,7 +9,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from ..db import record_audit, session_factory
+from ..db import record_audit, scope_to_org, session_factory
 from ..security import Principal, generate_token, require_token
 
 router = APIRouter(prefix="/api/v1/tokens", tags=["tokens"])
@@ -31,6 +31,7 @@ async def list_tokens(
 ) -> list[dict[str, Any]]:
     _require_admin(principal)
     async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)
         rows = (
             await s.execute(
                 text(
@@ -60,6 +61,7 @@ async def create_token(
     _require_admin(principal)
     raw, token_hash = generate_token()
     async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)
         row = (
             await s.execute(
                 text(
@@ -96,6 +98,7 @@ async def revoke_token(
 ) -> None:
     _require_admin(principal)
     async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)
         result = await s.execute(
             text(
                 "DELETE FROM api_tokens WHERE id = :id AND org_id = :org RETURNING id"
