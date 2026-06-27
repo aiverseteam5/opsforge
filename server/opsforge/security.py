@@ -133,15 +133,22 @@ def redact(value: Any) -> Any:
 class Principal:
     """The authenticated caller resolved from an API token."""
 
-    def __init__(self, user_id: str | None, org_id: str, role: str | None):
+    def __init__(
+        self,
+        user_id: str | None,
+        org_id: str,
+        role: str | None,
+        token_id: str | None = None,
+    ):
         self.user_id = user_id
         self.org_id = org_id
         self.role = role
+        self.token_id = token_id
 
 
 _LOOKUP_TOKEN_SQL = text(
     """
-    SELECT t.user_id, t.org_id, t.expires_at, u.role
+    SELECT t.id, t.user_id, t.org_id, t.expires_at, u.role
     FROM api_tokens t
     LEFT JOIN users u ON u.id = t.user_id
     WHERE t.token_hash = :token_hash
@@ -182,4 +189,5 @@ async def require_token(
         user_id=str(row.user_id) if row.user_id else None,
         org_id=str(row.org_id),
         role=row.role,
+        token_id=str(row.id) if row.id else None,
     )

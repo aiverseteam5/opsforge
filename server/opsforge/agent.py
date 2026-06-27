@@ -294,7 +294,11 @@ async def assemble_context(
     runs with no `process_key` (the kernel's telemetry-grounded path is
     unchanged); when a process is named, it tells the policy layer how trustworthy
     the knowledge basis is so low grounding can force a human gate (M6.5)."""
-    query = str(inputs.get("query", ""))
+    raw_query = str(inputs.get("query", ""))
+    # Sanitize query before embedding in the system context: strip control
+    # characters and cap length so injected alert payloads cannot override
+    # system-level instructions (F5 — prompt injection via alert webhook body).
+    query = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", raw_query)[:4096]
     parts = [instructions, f"## Trigger\nQuery: {query}"]
     if inputs.get("incident_ref"):
         parts.append(f"Incident ref: {inputs['incident_ref']}")

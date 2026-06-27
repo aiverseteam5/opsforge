@@ -1,8 +1,8 @@
-"""Sliding-window rate limiter for webhook endpoints.
+"""Sliding-window rate limiters for webhook and run-dispatch endpoints.
 
-In-memory, per-IP, thread-safe. Correct for the current single-API-process
-deployment model. At multi-replica scale, move this to an Nginx ingress rule
-or a Postgres counter — the FastAPI dependency interface stays the same.
+In-memory, per-key (IP or token), thread-safe. Correct for single-API-process
+deployment. At multi-replica scale, move to an Nginx ingress rule or a Postgres
+counter — the FastAPI dependency interface stays the same.
 
 Stale buckets are pruned on every check so memory stays bounded even under
 sustained load from many distinct IPs.
@@ -14,9 +14,10 @@ import threading
 from collections import deque
 from time import monotonic
 
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 
 from .config import get_settings
+from .security import Principal, require_token
 
 
 class SlidingWindowLimiter:
@@ -89,4 +90,41 @@ def webhook_rate_limit(request: Request) -> None:
                 f"per {settings.webhook_rate_limit_window_s}s"
             ),
             headers={"Retry-After": str(settings.webhook_rate_limit_window_s)},
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Per-token run dispatch limiter (F6: unbounded LLM cost amplification)
+# --------------------------------------------------------------------------- #
+_dispatch_limiter: SlidingWindowLimiter | None = None
+
+
+def _get_dispatch_limiter() -> SlidingWindowLimiter:
+    global _dispatch_limiter
+    if _dispatch_limiter is None:
+        s = get_settings()
+        _dispatch_limiter = SlidingWindowLimiter(
+            max_requests=s.run_dispatch_rate_limit_requests,
+            window_seconds=s.run_dispatch_rate_limit_window_s,
+        )
+    return _dispatch_limiter
+
+
+def run_dispatch_rate_limit(principal: Principal = Depends(require_token)) -> None:
+    """FastAPI dependency: raises 429 if the token exceeds the run dispatch rate limit.
+
+    Keyed by token id (not IP) so distributed clients behind NAT each get their
+    own quota — an attacker cannot amplify by parallelising from one network.
+    """
+    key = str(principal.token_id) if principal.token_id else principal.org_id
+    if not _get_dispatch_limiter().is_allowed(key):
+        settings = get_settings()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"run dispatch rate limit exceeded: "
+                f"max {settings.run_dispatch_rate_limit_requests} requests "
+                f"per {settings.run_dispatch_rate_limit_window_s}s"
+            ),
+            headers={"Retry-After": str(settings.run_dispatch_rate_limit_window_s)},
         )

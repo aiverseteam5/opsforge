@@ -40,7 +40,8 @@ Poster = Callable[[str, str, list[dict[str, Any]]], Awaitable[dict[str, Any]]]
 def verify_signature(timestamp: str | None, signature: str | None, body: bytes) -> bool:
     secret = get_settings().slack_signing_secret
     if not secret:
-        return True  # dev: not configured
+        # In production, an unconfigured secret must FAIL CLOSED — never bypass.
+        return get_settings().environment == "dev"
     if not timestamp or not signature:
         return False
     basestring = f"v0:{timestamp}:{body.decode('utf-8', 'replace')}".encode()

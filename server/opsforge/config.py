@@ -122,6 +122,10 @@ class Settings(BaseSettings):
     webhook_rate_limit_requests: int = 120  # requests allowed per window
     webhook_rate_limit_window_s: int = 60   # window size in seconds
 
+    # Run dispatch rate limiting: sliding-window per API token (F6 — LLM cost guard).
+    run_dispatch_rate_limit_requests: int = 60   # dispatches allowed per window
+    run_dispatch_rate_limit_window_s: int = 60   # window size in seconds
+
     # JIT credential leases: default TTL for minted credentials (seconds).
     # Individual providers may issue shorter-lived credentials; this is the cap
     # used when the provider config omits duration_seconds.

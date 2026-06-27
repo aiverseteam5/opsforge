@@ -15,6 +15,7 @@ from sqlalchemy import text
 
 from ..db import scope_to_org, session_factory
 from ..dispatch import create_run, resolve_nl
+from ..ratelimit import run_dispatch_rate_limit
 from ..security import Principal, require_token
 from ..skills import get_skill
 
@@ -33,7 +34,9 @@ class RunCreate(BaseModel):
 
 @router.post("", status_code=201)
 async def create_run_endpoint(
-    body: RunCreate, principal: Principal = Depends(require_token)
+    body: RunCreate,
+    _rl: None = Depends(run_dispatch_rate_limit),
+    principal: Principal = Depends(require_token),
 ):
     # NL path: resolve to a skill + entities (or return candidates if ambiguous).
     if body.nl:

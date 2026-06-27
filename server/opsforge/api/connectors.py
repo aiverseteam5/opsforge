@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import os
+import shlex
+import urllib.parse
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
@@ -26,6 +30,68 @@ from ..ops_model import load_starter_mapping, validate_mapping
 from ..security import Principal, encrypt, require_token
 
 router = APIRouter(prefix="/api/v1/connectors", tags=["connectors"])
+
+# Shells and interpreters that must not be used as stdio connector commands
+# with an arbitrary -c / --exec style flag (prevents RCE via connector create).
+_BLOCKED_COMMANDS = frozenset({
+    "sh", "bash", "zsh", "dash", "ksh", "fish",
+    "perl", "ruby", "lua", "tclsh",
+})
+
+# Private + link-local IP ranges blocked for HTTP connectors (SSRF / IMDS).
+_PRIVATE_NETS = [
+    ipaddress.ip_network(r) for r in (
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+        "127.0.0.0/8", "169.254.0.0/16",          # AWS IMDS
+        "100.64.0.0/10",                            # CGNAT
+        "::1/128", "fc00::/7", "fe80::/10",
+    )
+]
+
+
+def _validate_stdio_endpoint(endpoint: str) -> None:
+    """Reject shell -c / arbitrary-command patterns in stdio connector endpoints."""
+    try:
+        argv = shlex.split(endpoint, posix=False)
+    except ValueError as exc:
+        raise ValueError(f"unparseable endpoint: {exc}") from exc
+    if not argv:
+        raise ValueError("endpoint must not be empty")
+    # Blocked: bare shell or interpreter with a -c / --eval flag anywhere in argv.
+    cmd = os.path.basename(argv[0]).lower()
+    if cmd in _BLOCKED_COMMANDS:
+        if any(a in ("-c", "--eval", "--execute", "-e") for a in argv[1:]):
+            raise ValueError(
+                f"shell/interpreter with -c is not permitted as a connector command: {cmd}"
+            )
+    # Block any argv that starts with -c (catches e.g. "/bin/sh -c ...")
+    if len(argv) > 1 and argv[1] in ("-c", "--eval", "--execute", "-e"):
+        raise ValueError("connector endpoint may not use -c (arbitrary command execution)")
+
+
+def _validate_http_endpoint(endpoint: str, *, environment: str = "dev") -> None:
+    """Reject non-http(s) schemes and private-IP ranges (SSRF / IMDS protection)."""
+    try:
+        parsed = urllib.parse.urlparse(endpoint)
+    except Exception as exc:
+        raise ValueError(f"invalid URL: {exc}") from exc
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("HTTP connector endpoint must use http or https scheme")
+    if environment != "dev" and parsed.scheme == "http":
+        raise ValueError("http scheme is not allowed in production; use https")
+    hostname = parsed.hostname or ""
+    try:
+        addr = ipaddress.ip_address(hostname)
+        for net in _PRIVATE_NETS:
+            if addr in net:
+                raise ValueError(
+                    f"connector endpoint resolves to a reserved/private address: {addr}"
+                )
+    except ValueError as exc:
+        # ip_address() raises for hostnames; re-raise only our own private-IP errors.
+        if "reserved" in str(exc) or "private" in str(exc):
+            raise
+
 
 ConnectorKind = Literal[
     "aws", "kubernetes", "datadog", "servicenow", "jira", "pagerduty", "slack",
@@ -135,6 +201,16 @@ async def create_connector(
 ):
     if principal.role not in ("admin",):
         raise HTTPException(status_code=403, detail="connector management requires admin role")
+    # Endpoint security validation (F1/F4).
+    from ..config import get_settings as _gs
+    _env = _gs().environment
+    try:
+        if body.transport == "stdio":
+            _validate_stdio_endpoint(body.endpoint)
+        else:
+            _validate_http_endpoint(body.endpoint, environment=_env)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     # Fail CLOSED: a credential-bearing connector must not be created (and flip to
     # 'connected') with an empty vault. Reachability alone is not a configured credential.
     if requires_credential(body.kind) and not body.credentials:
@@ -304,6 +380,18 @@ async def update_connector(
     existing = await load_connector(connector_id, principal.org_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="connector not found")
+    # Endpoint security validation on updates (F1/F4).
+    if body.endpoint is not None:
+        from ..config import get_settings as _gs
+        _env = _gs().environment
+        _transport = existing.get("transport", "http")
+        try:
+            if _transport == "stdio":
+                _validate_stdio_endpoint(body.endpoint)
+            else:
+                _validate_http_endpoint(body.endpoint, environment=_env)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     # For a shipped knowledge connector (Confluence) the form's `endpoint` is the BASE URL
     # (a vault env value) and the form keys (api_key/space) are the env keys the MCP server
     # reads — NOT the connector endpoint (which is the fixed spawn command). The SAME mapping
