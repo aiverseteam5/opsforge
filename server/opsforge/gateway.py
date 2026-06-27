@@ -37,6 +37,7 @@ class ModelGateway(Protocol):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         model: str,
+        tool_choice: str | dict | None = None,
     ) -> ChatResult: ...
 
     async def embedding(self, texts: list[str], model: str) -> list[list[float]]: ...
@@ -59,14 +60,16 @@ class LiteLLMGateway:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         model: str,
+        tool_choice: str | dict | None = None,
     ) -> ChatResult:
         import litellm
 
+        effective_tool_choice = tool_choice if tool_choice is not None else ("auto" if tools else None)
         resp = await litellm.acompletion(
             model=model,
             messages=messages,
             tools=tools or None,
-            tool_choice="auto" if tools else None,
+            tool_choice=effective_tool_choice,
             api_key=self.api_key,
             api_base=self.api_base,
         )

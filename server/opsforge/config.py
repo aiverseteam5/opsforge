@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     # process is below it, a consequential action is forced to a human gate.
     context_grounding_threshold: float = 0.5
 
+    # Embedding dimension for pgvector columns. Must match the model in use;
+    # the worker asserts this at startup to catch dim-mismatch before writes fail.
+    embedding_dimension: int = 1536
+
     # Worker queue loop.
     worker_poll_interval_ms: int = 500
     worker_max_attempts: int = 5

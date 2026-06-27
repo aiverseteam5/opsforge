@@ -22,7 +22,7 @@ from .connectors import (
     load_connectors_by_kind,
     open_connector,
 )
-from .db import append_run_event, session_factory
+from .db import append_run_event, enqueue_idempotent, scope_to_org, session_factory
 from .gateway import ModelGateway, make_assistant_message, make_tool_message
 from .graph import neighborhood, render_neighborhood
 from .knowledge import KnowledgeChunkRow, freshness_days, get_chunks
@@ -286,6 +286,7 @@ async def assemble_context(
     instructions: str,
     inputs: dict[str, Any],
     available_fqns: list[str],
+    embedding: list[float] | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
     """Build the system context and a grounding summary. The summary is None for
     runs with no `process_key` (the kernel's telemetry-grounded path is
@@ -328,6 +329,31 @@ async def assemble_context(
     if incident_block:
         parts.append(incident_block)
 
+    # Similar past patterns — semantic search over codified run embeddings.
+    similar_k = manifest.get("context", {}).get("similar_patterns", 0)
+    if similar_k > 0 and embedding is not None:
+        try:
+            from .knowledge import _vector_literal  # reuse pgvector text helper
+            vec_text = _vector_literal(embedding)
+            async with session_factory().begin() as s:
+                pat_rows = (
+                    await s.execute(
+                        text(
+                            "SELECT summary, resolution FROM patterns "
+                            "WHERE org_id = :org AND embedding IS NOT NULL "
+                            "ORDER BY embedding <=> CAST(:vec AS vector) LIMIT :k"
+                        ),
+                        {"org": str(org_id), "vec": vec_text, "k": similar_k},
+                    )
+                ).all()
+            if pat_rows:
+                rendered_pats = "\n".join(
+                    f"- {r.summary}: {r.resolution}" for r in pat_rows
+                )
+                parts.append(f"## Similar past patterns\n{rendered_pats}")
+        except Exception:  # noqa: BLE001 - pattern context is optional; degrade gracefully
+            pass
+
     parts.append(
         "## Your read-only tools\n"
         + "\n".join(f"- {f}" for f in available_fqns)
@@ -344,7 +370,7 @@ async def _load_run(run_id: UUID) -> dict[str, Any] | None:
         row = (
             await s.execute(
                 text(
-                    "SELECT id, org_id, skill_id, status, trigger, model "
+                    "SELECT id, org_id, skill_id, status, trigger, model, parent_run_id "
                     "FROM runs WHERE id = :id"
                 ),
                 {"id": run_id},
@@ -379,6 +405,8 @@ async def _finalize(
     report: RcaReport | None,
     tokens_in: int,
     tokens_out: int,
+    org_id: str = "",
+    parent_run_id: UUID | None = None,
 ) -> None:
     import json
 
@@ -400,6 +428,20 @@ async def _finalize(
                 "id": run_id,
             },
         )
+        # Quality gate: only codify top-level, completed, high-confidence runs.
+        if (
+            status == "done"
+            and parent_run_id is None
+            and report is not None
+            and report.confidence != "low"
+            and org_id
+        ):
+            await enqueue_idempotent(
+                s,
+                kind="codify_skill",
+                payload={"run_id": str(run_id), "org_id": org_id},
+                org_id=org_id,
+            )
 
 
 async def _insert_proposal(
@@ -459,8 +501,20 @@ async def run_agent(
 
     async with AsyncExitStack() as stack:
         toolbelt = await build_toolbelt(manifest, org_id, stack)
+
+        # Pre-compute embedding for similar_patterns lookup (HTTP call, outside any DB tx).
+        query_embedding: list[float] | None = None
+        similar_k = manifest.get("context", {}).get("similar_patterns", 0)
+        if similar_k > 0:
+            try:
+                vecs = await gateway.embedding([str(inputs.get("query", ""))], _default_model_embedding())
+                query_embedding = vecs[0] if vecs else None
+            except Exception:  # noqa: BLE001 - embedding failure must not block the run
+                pass
+
         context, grounding = await assemble_context(
-            org_id, manifest, instructions, inputs, toolbelt.available_fqns
+            org_id, manifest, instructions, inputs, toolbelt.available_fqns,
+            embedding=query_embedding,
         )
         await append_run_event(
             run_id,
@@ -479,7 +533,8 @@ async def run_agent(
         # A few extra steps beyond the tool budget for reasoning/report turns.
         for _ in range(max_tool_calls + 5):
             if (await _run_status(run_id)) == "cancelled":
-                await _finalize(run_id, "cancelled", None, tokens_in, tokens_out)
+                await _finalize(run_id, "cancelled", None, tokens_in, tokens_out,
+                                org_id=str(org_id), parent_run_id=run.get("parent_run_id"))
                 return _incomplete_report("run cancelled")
 
             result = await gateway.chat(messages, schemas, chosen_model)
@@ -554,7 +609,8 @@ async def run_agent(
             )
             await append_run_event(run_id, org_id, "report", report.model_dump())
 
-        await _finalize(run_id, "done", report, tokens_in, tokens_out)
+        await _finalize(run_id, "done", report, tokens_in, tokens_out,
+                        org_id=str(org_id), parent_run_id=run.get("parent_run_id"))
         return report
 
 
@@ -562,6 +618,12 @@ def _default_model() -> str:
     from .config import get_settings
 
     return get_settings().model
+
+
+def _default_model_embedding() -> str:
+    from .config import get_settings
+
+    return get_settings().embedding_model
 
 
 def _parse_report(args: dict[str, Any]) -> tuple[RcaReport | None, dict[str, Any]]:
