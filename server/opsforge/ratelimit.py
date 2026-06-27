@@ -70,10 +70,17 @@ def _get_limiter() -> SlidingWindowLimiter:
 
 
 def _client_ip(request: Request) -> str:
-    """Extract the real client IP, respecting X-Forwarded-For from a trusted proxy."""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """Extract the client IP for rate-limit keying.
+
+    X-Forwarded-For is only trusted when OPSFORGE_TRUSTED_PROXY=true — i.e.
+    when OpsForge sits behind a proxy that sets the header reliably. In the
+    default (False) case the header is ignored: a caller cannot spoof XFF to
+    rotate their apparent IP and bypass per-IP rate limits.
+    """
+    if get_settings().trusted_proxy:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
 

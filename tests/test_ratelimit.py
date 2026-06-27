@@ -85,19 +85,32 @@ def _mock_request(remote: str, forwarded: str | None = None) -> MagicMock:
 
 def test_client_ip_uses_direct_connection() -> None:
     req = _mock_request("1.2.3.4")
-    assert _client_ip(req) == "1.2.3.4"
+    with patch("opsforge.ratelimit.get_settings") as mock_settings:
+        mock_settings.return_value.trusted_proxy = False
+        assert _client_ip(req) == "1.2.3.4"
 
 
-def test_client_ip_respects_forwarded_for() -> None:
+def test_client_ip_respects_forwarded_for_when_trusted() -> None:
     req = _mock_request("10.0.0.1", forwarded="203.0.113.5, 10.0.0.1")
-    assert _client_ip(req) == "203.0.113.5"
+    with patch("opsforge.ratelimit.get_settings") as mock_settings:
+        mock_settings.return_value.trusted_proxy = True
+        assert _client_ip(req) == "203.0.113.5"
+
+
+def test_client_ip_ignores_forwarded_for_when_untrusted() -> None:
+    req = _mock_request("10.0.0.1", forwarded="203.0.113.5, 10.0.0.1")
+    with patch("opsforge.ratelimit.get_settings") as mock_settings:
+        mock_settings.return_value.trusted_proxy = False
+        assert _client_ip(req) == "10.0.0.1"
 
 
 def test_client_ip_no_client() -> None:
     req = MagicMock()
     req.client = None
     req.headers = {}
-    assert _client_ip(req) == "unknown"
+    with patch("opsforge.ratelimit.get_settings") as mock_settings:
+        mock_settings.return_value.trusted_proxy = False
+        assert _client_ip(req) == "unknown"
 
 
 # --------------------------------------------------------------------------- #
