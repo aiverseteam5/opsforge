@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel
 from sqlalchemy import text
 
 from ..config import get_settings
@@ -23,6 +24,10 @@ from ..skills import (
 )
 
 _WRITER_ROLES = {"admin", "operator"}
+
+
+class ReviewBody(BaseModel):
+    note: str | None = None
 
 
 def _require_writer(principal: Principal) -> None:
@@ -150,19 +155,24 @@ async def list_proposed(
 @router.post("/{skill_id}/approve")
 async def approve_skill(
     skill_id: str,
+    body: ReviewBody = Body(default_factory=ReviewBody),
     principal: Principal = Depends(require_token),
 ):
-    """Approve a proposed codified skill: set enabled=true so it becomes active."""
+    """Approve a proposed codified skill: set enabled=true so it becomes active.
+
+    An optional `note` is stored as feedback to improve future codify_skill LLM calls.
+    """
     _require_writer(principal)
     async with session_factory().begin() as s:
         result = await s.execute(
             text(
-                "UPDATE skills SET enabled = true, updated_at = now() "
+                "UPDATE skills SET enabled = true, updated_at = now(), "
+                "review_note = :note "
                 "WHERE id = :id AND org_id = :org AND source = 'codified' "
                 "AND rejected_at IS NULL "
                 "RETURNING id, slug"
             ),
-            {"id": skill_id, "org": principal.org_id},
+            {"id": skill_id, "org": principal.org_id, "note": body.note},
         )
         row = result.first()
     if row is None:
@@ -170,7 +180,7 @@ async def approve_skill(
     actor = f"user:{principal.user_id}" if principal.user_id else "system"
     await record_audit(
         principal.org_id, actor, "skill.approved",
-        subject_ref=str(row.id), detail={"slug": row.slug},
+        subject_ref=str(row.id), detail={"slug": row.slug, "note": body.note},
     )
     return {"id": str(row.id), "slug": row.slug, "enabled": True}
 
@@ -178,19 +188,24 @@ async def approve_skill(
 @router.post("/{skill_id}/reject")
 async def reject_skill(
     skill_id: str,
+    body: ReviewBody = Body(default_factory=ReviewBody),
     principal: Principal = Depends(require_token),
 ):
-    """Reject a proposed codified skill: set rejected_at=now(). Patterns are retained."""
+    """Reject a proposed codified skill: set rejected_at=now(). Patterns are retained.
+
+    An optional `note` is stored as feedback to improve future codify_skill LLM calls.
+    """
     _require_writer(principal)
     async with session_factory().begin() as s:
         result = await s.execute(
             text(
-                "UPDATE skills SET rejected_at = now(), updated_at = now() "
+                "UPDATE skills SET rejected_at = now(), updated_at = now(), "
+                "review_note = :note "
                 "WHERE id = :id AND org_id = :org AND source = 'codified' "
                 "AND rejected_at IS NULL "
                 "RETURNING id, slug"
             ),
-            {"id": skill_id, "org": principal.org_id},
+            {"id": skill_id, "org": principal.org_id, "note": body.note},
         )
         row = result.first()
     if row is None:
@@ -198,7 +213,7 @@ async def reject_skill(
     actor = f"user:{principal.user_id}" if principal.user_id else "system"
     await record_audit(
         principal.org_id, actor, "skill.rejected",
-        subject_ref=str(row.id), detail={"slug": row.slug},
+        subject_ref=str(row.id), detail={"slug": row.slug, "note": body.note},
     )
     return {"id": str(row.id), "slug": row.slug, "rejected": True}
 

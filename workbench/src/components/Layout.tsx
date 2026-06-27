@@ -15,6 +15,7 @@ import { Processes } from "../pages/Processes";
 import { Providers } from "../pages/Providers";
 import { Catalog } from "../pages/Catalog";
 import { CatalogConnect } from "../pages/CatalogConnect";
+import { Tokens } from "../pages/Tokens";
 
 const NAV: { to?: string; label?: string; end?: boolean; section?: string }[] = [
   { to: "/", label: "Mission Control", end: true },
@@ -31,6 +32,7 @@ const NAV: { to?: string; label?: string; end?: boolean; section?: string }[] = 
   { to: "/connectors", label: "Connectors" },
   { to: "/schedules", label: "Schedules" },
   { to: "/audit", label: "Audit" },
+  { to: "/tokens", label: "API Tokens" },
 ];
 
 export function Layout() {
@@ -95,6 +97,7 @@ export function Layout() {
           <Route path="/connectors" element={<Connectors />} />
           <Route path="/schedules" element={<Schedules />} />
           <Route path="/audit" element={<Audit />} />
+          <Route path="/tokens" element={<Tokens />} />
         </Routes>
       </main>
 
