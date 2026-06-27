@@ -117,6 +117,19 @@ export interface Finding {
   detail: any; evidence_refs: string[]; confidence: number | null;
   state: FindingState; seq: number;
 }
+// Token management: list/create/revoke API tokens. token field is write-once
+// and only present on the CreatedToken response (never returned on list).
+export interface Token {
+  id: string;
+  name: string | null;
+  last_used_at: string | null;
+  expires_at: string | null;
+  created_at: string;
+}
+export interface CreatedToken extends Token {
+  token: string; // raw token shown once — copy it now, it cannot be retrieved
+}
+
 // Phase 3: codified skill awaiting human review before activation.
 export interface ProposedSkill {
   id: string;
@@ -205,6 +218,11 @@ export const api = {
     req(`/skills/${id}/approve`, { method: "POST", body: JSON.stringify({ note: note || null }) }),
   rejectSkill: (id: string, note?: string) =>
     req(`/skills/${id}/reject`, { method: "POST", body: JSON.stringify({ note: note || null }) }),
+
+  listTokens: () => req<Token[]>("/tokens"),
+  createToken: (body: { name?: string; expires_at?: string }) =>
+    req<CreatedToken>("/tokens", { method: "POST", body: JSON.stringify(body) }),
+  revokeToken: (id: string) => req(`/tokens/${id}`, { method: "DELETE" }),
 
   listSchedules: () => req<Schedule[]>("/schedules"),
   createSchedule: (body: Record<string, unknown>) =>
