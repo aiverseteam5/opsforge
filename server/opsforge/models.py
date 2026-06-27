@@ -660,4 +660,5 @@ ALL_TABLES: tuple[str, ...] = (
     "llm_providers",
     "conversations",
     "messages",
+    "credential_leases",
 )

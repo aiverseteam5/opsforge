@@ -23,7 +23,7 @@ from uuid import UUID
 from sqlalchemy import text
 
 from .connectors import ConnectorError, load_connectors_by_kind, open_connector
-from .db import append_run_event, enqueue, record_audit, session_factory
+from .db import append_run_event, enqueue, record_audit, scope_to_org, session_factory
 from .security import redact
 
 # Allowed state transitions. Anything not listed is rejected.
@@ -44,6 +44,7 @@ class ActionError(RuntimeError):
 
 async def _load_action(action_id: UUID, org_id: UUID) -> dict[str, Any] | None:
     async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
         row = (
             await s.execute(
                 text(
@@ -61,6 +62,7 @@ async def _transition(
     action_id: UUID,
     expected_from: str,
     to_state: str,
+    org_id: UUID,
     *,
     extra_sql: str = "",
     extra_params: dict[str, Any] | None = None,
@@ -72,6 +74,7 @@ async def _transition(
     params = {"id": action_id, "to": to_state, "from": expected_from}
     params.update(extra_params or {})
     async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
         res = await s.execute(
             text(
                 f"UPDATE actions SET state = :to {extra_sql} "
@@ -136,6 +139,7 @@ async def approve_action(
         action_id,
         action["state"],
         "approved",
+        action["org_id"],
         extra_sql=", approved_by = :by, approved_at = now()",
         extra_params={"by": _actor_uuid(actor)},
     )
@@ -144,6 +148,7 @@ async def approve_action(
     await _audit(action, actor, "action.approved")
     # Hand execution to the worker (deterministic, no human in the hot path).
     async with session_factory().begin() as s:
+        await scope_to_org(s, action["org_id"])
         await enqueue(
             s, kind="execute_action", payload={"action_id": str(action_id)},
             org_id=str(action["org_id"]),
@@ -155,7 +160,7 @@ async def deny_action(action_id: UUID, *, org_id: UUID, actor: str) -> dict[str,
     action = await _load_action(action_id, org_id)
     if action is None:
         raise ActionError("action not found")
-    if not await _transition(action_id, action["state"], "denied"):
+    if not await _transition(action_id, action["state"], "denied", action["org_id"]):
         raise ActionError(f"cannot deny from state {action['state']}")
     await _audit(action, actor, "action.denied")
     return {"state": "denied", "id": str(action_id)}
@@ -174,7 +179,7 @@ async def dry_run_action(action_id: UUID, *, org_id: UUID, actor: str) -> dict[s
         "rollback": action["rollback"],
         "note": "dry-run only; no mutating tool was called",
     }
-    await _transition(action_id, action["state"], "dry_run_done")
+    await _transition(action_id, action["state"], "dry_run_done", action["org_id"])
     await _audit(action, actor, "action.dry_run", detail=plan)
     return {"state": "dry_run_done", "plan": plan}
 
@@ -182,8 +187,10 @@ async def dry_run_action(action_id: UUID, *, org_id: UUID, actor: str) -> dict[s
 # --------------------------------------------------------------------------- #
 # Execution (called from the worker via execute_action job)
 # --------------------------------------------------------------------------- #
-async def execute_action(action_id: UUID) -> dict[str, Any]:
-    action = await _load_action(action_id)
+async def execute_action(action_id: UUID, org_id: UUID | None = None) -> dict[str, Any]:
+    if org_id is None:
+        raise ActionError("execute_action requires org_id")
+    action = await _load_action(action_id, org_id)
     if action is None:
         raise ActionError("action not found")
     _require_policy_trace(action)
@@ -194,7 +201,7 @@ async def execute_action(action_id: UUID) -> dict[str, Any]:
                      detail={"reason": "change freeze in effect"})
         return {"state": action["state"], "frozen": True}
 
-    if not await _transition(action_id, "approved", "executing"):
+    if not await _transition(action_id, "approved", "executing", action["org_id"]):
         raise ActionError(f"cannot execute from state {action['state']}")
     await _audit(action, "system:executor", "action.executing")
 
@@ -219,7 +226,7 @@ async def execute_action(action_id: UUID) -> dict[str, Any]:
         return {"state": "rolled_back" if action.get("rollback") else "failed"}
 
     await _transition(
-        action_id, "executing", "succeeded",
+        action_id, "executing", "succeeded", action["org_id"],
         extra_sql=", executed_at = now(), result = CAST(:res AS jsonb)",
         extra_params={"res": _json(redact(result))},
     )
@@ -241,6 +248,7 @@ async def _required_role(action: dict[str, Any]) -> str | None:
     priority = None
     if action.get("run_id"):
         async with session_factory().begin() as s:
+            await scope_to_org(s, action["org_id"])
             trig = (
                 await s.execute(
                     text("SELECT trigger FROM runs WHERE id = :id"),
@@ -276,7 +284,7 @@ async def _health_ok(cs, kind: str, target_ref: str | None, run_id) -> bool:
 
 async def _fail(action: dict[str, Any], *, reason: str) -> None:
     await _transition(
-        action["id"], "executing", "failed",
+        action["id"], "executing", "failed", action["org_id"],
         extra_sql=", result = CAST(:res AS jsonb)",
         extra_params={"res": _json({"error": reason})},
     )
@@ -292,7 +300,7 @@ async def _maybe_rollback(action: dict[str, Any], connector: dict, kind: str) ->
             await cs.call(
                 rollback["tool"], rollback.get("params") or {}, run_id=action["run_id"]
             )
-        await _transition(action["id"], "failed", "rolled_back")
+        await _transition(action["id"], "failed", "rolled_back", action["org_id"])
         await _audit(
             action, "system:executor", "action.rolled_back",
             detail={"via": rollback["tool"]},

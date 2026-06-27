@@ -60,9 +60,12 @@ async def handle_run_agent(payload: dict[str, Any]) -> None:
     from .surfaces.slack import notify_run
 
     run_id = payload.get("run_id")
+    org_id = payload.get("org_id", "")
     if not run_id:
         raise ValueError("run_agent job missing run_id")
     async with session_factory().begin() as s:
+        if org_id:
+            await scope_to_org(s, org_id)
         skill_id = (
             await s.execute(
                 text("SELECT skill_id FROM runs WHERE id = :id"), {"id": run_id}
@@ -71,7 +74,7 @@ async def handle_run_agent(payload: dict[str, Any]) -> None:
     skill = await get_skill_by_id(skill_id) if skill_id else None
     if skill is None:
         raise ValueError(f"run {run_id} has no installed skill")
-    await run_agent(UUID(run_id), skill, LiteLLMGateway())
+    await run_agent(UUID(run_id), skill, LiteLLMGateway(), org_id=org_id)
     # Deliver the report to the run's surface (no-op for non-Slack runs).
     try:
         await notify_run(UUID(run_id))
@@ -84,9 +87,12 @@ async def handle_execute_action(payload: dict[str, Any]) -> None:
     from .actions import execute_action
 
     action_id = payload.get("action_id")
+    org_id = payload.get("org_id")
     if not action_id:
         raise ValueError("execute_action job missing action_id")
-    await execute_action(UUID(action_id))
+    if not org_id:
+        raise ValueError("execute_action job missing org_id")
+    await execute_action(UUID(action_id), org_id=UUID(org_id))
 
 
 async def handle_ingest(payload: dict[str, Any]) -> None:
@@ -217,10 +223,10 @@ async def handle_codify_skill(payload: dict[str, Any]) -> None:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "slug": {"type": "string", "description": "URL-safe slug, e.g. disk-space-check"},
+                    "slug": {"type": "string", "description": "URL-safe slug, e.g. disk-space-check"},  # noqa: E501
                     "name": {"type": "string", "description": "Human-readable skill name"},
-                    "description": {"type": "string", "description": "What this skill investigates"},
-                    "instructions_md": {"type": "string", "description": "Full INSTRUCTIONS.md content"},
+                    "description": {"type": "string", "description": "What this skill investigates"},  # noqa: E501
+                    "instructions_md": {"type": "string", "description": "Full INSTRUCTIONS.md content"},  # noqa: E501
                     "skill_yaml": {"type": "string", "description": "Full skill.yaml content"},
                 },
                 "required": ["slug", "name", "description", "instructions_md", "skill_yaml"],
@@ -362,8 +368,8 @@ async def handle_codify_skill(payload: dict[str, Any]) -> None:
         if embedding is not None:
             await s.execute(
                 text(
-                    "INSERT INTO patterns (org_id, run_id, summary, embedding, resolution, outcome) "
-                    "VALUES (:org, :rid, :summary, CAST(:emb AS vector), :res, CAST(:outcome AS jsonb))"
+                    "INSERT INTO patterns (org_id, run_id, summary, embedding, resolution, outcome) "  # noqa: E501
+                    "VALUES (:org, :rid, :summary, CAST(:emb AS vector), :res, CAST(:outcome AS jsonb))"  # noqa: E501
                 ),
                 {
                     "org": org_id,

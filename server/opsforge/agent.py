@@ -163,6 +163,7 @@ async def _find_root_keys(org_id: Any, query: str) -> list[str]:
         return []
     patterns = [f"%{t}%" for t in tokens]
     async with session_factory().begin() as s:
+        await scope_to_org(s, str(org_id))
         rows = (
             await s.execute(
                 text(
@@ -181,6 +182,7 @@ async def _recent_changes(
     org_id: Any, node_keys: list[str], window_hours: int
 ) -> list[dict[str, Any]]:
     async with session_factory().begin() as s:
+        await scope_to_org(s, str(org_id))
         rows = (
             await s.execute(
                 text(
@@ -311,7 +313,7 @@ async def assemble_context(
     if manifest.get("context", {}).get("graph", True):
         root_keys = await _find_root_keys(org_id, query)
         if root_keys:
-            nb = await neighborhood(root_keys[0], 2)
+            nb = await neighborhood(root_keys[0], 2, org_id=str(org_id))
             node_keys = [n["natural_key"] for n in nb["nodes"]]
             parts.append("## Operational graph\n" + render_neighborhood(nb))
 
@@ -336,6 +338,7 @@ async def assemble_context(
             from .knowledge import _vector_literal  # reuse pgvector text helper
             vec_text = _vector_literal(embedding)
             async with session_factory().begin() as s:
+                await scope_to_org(s, str(org_id))
                 pat_rows = (
                     await s.execute(
                         text(
@@ -365,8 +368,10 @@ async def assemble_context(
 # --------------------------------------------------------------------------- #
 # DB helpers
 # --------------------------------------------------------------------------- #
-async def _load_run(run_id: UUID) -> dict[str, Any] | None:
+async def _load_run(run_id: UUID, org_id: str = "") -> dict[str, Any] | None:
     async with session_factory().begin() as s:
+        if org_id:
+            await scope_to_org(s, org_id)
         row = (
             await s.execute(
                 text(
@@ -379,8 +384,10 @@ async def _load_run(run_id: UUID) -> dict[str, Any] | None:
     return dict(row._mapping) if row else None
 
 
-async def _run_status(run_id: UUID) -> str | None:
+async def _run_status(run_id: UUID, org_id: str = "") -> str | None:
     async with session_factory().begin() as s:
+        if org_id:
+            await scope_to_org(s, org_id)
         return (
             await s.execute(
                 text("SELECT status FROM runs WHERE id = :id"), {"id": run_id}
@@ -388,8 +395,10 @@ async def _run_status(run_id: UUID) -> str | None:
         ).scalar_one_or_none()
 
 
-async def _set_running(run_id: UUID, model: str) -> None:
+async def _set_running(run_id: UUID, model: str, org_id: str = "") -> None:
     async with session_factory().begin() as s:
+        if org_id:
+            await scope_to_org(s, org_id)
         await s.execute(
             text(
                 "UPDATE runs SET status='running', model=:m, started_at=now() "
@@ -413,6 +422,8 @@ async def _finalize(
     md = render_markdown(report) if report else None
     rjson = json.dumps(report.model_dump()) if report else None
     async with session_factory().begin() as s:
+        if org_id:
+            await scope_to_org(s, org_id)
         await s.execute(
             text(
                 "UPDATE runs SET status=:st, report_md=:md, "
@@ -450,6 +461,7 @@ async def _insert_proposal(
     import json
 
     async with session_factory().begin() as s:
+        await scope_to_org(s, str(run["org_id"]))
         action_id = (
             await s.execute(
                 text(
@@ -483,17 +495,18 @@ async def run_agent(
     gateway: ModelGateway,
     model: str | None = None,
     depth: int = 0,
+    org_id: str = "",
 ) -> RcaReport:
-    run = await _load_run(run_id)
+    run = await _load_run(run_id, org_id=org_id)
     if run is None:
         raise ValueError(f"run {run_id} not found")
-    org_id = run["org_id"]
+    org_id = str(run["org_id"])
     manifest = skill["manifest"]
     instructions = skill.get("instructions") or ""
     inputs = (run.get("trigger") or {}).get("payload") or {}
     chosen_model = model or run.get("model") or skill.get("model") or _default_model()
 
-    await _set_running(run_id, chosen_model)
+    await _set_running(run_id, chosen_model, org_id=org_id)
 
     max_tool_calls = manifest.get("policy", {}).get("max_tool_calls", 25)
     tokens_in = tokens_out = 0
@@ -507,7 +520,7 @@ async def run_agent(
         similar_k = manifest.get("context", {}).get("similar_patterns", 0)
         if similar_k > 0:
             try:
-                vecs = await gateway.embedding([str(inputs.get("query", ""))], _default_model_embedding())
+                vecs = await gateway.embedding([str(inputs.get("query", ""))], _default_model_embedding())  # noqa: E501
                 query_embedding = vecs[0] if vecs else None
             except Exception:  # noqa: BLE001 - embedding failure must not block the run
                 pass
@@ -532,9 +545,9 @@ async def run_agent(
         tool_calls_used = 0
         # A few extra steps beyond the tool budget for reasoning/report turns.
         for _ in range(max_tool_calls + 5):
-            if (await _run_status(run_id)) == "cancelled":
+            if (await _run_status(run_id, org_id=org_id)) == "cancelled":
                 await _finalize(run_id, "cancelled", None, tokens_in, tokens_out,
-                                org_id=str(org_id), parent_run_id=run.get("parent_run_id"))
+                                org_id=org_id, parent_run_id=run.get("parent_run_id"))
                 return _incomplete_report("run cancelled")
 
             result = await gateway.chat(messages, schemas, chosen_model)
@@ -610,7 +623,7 @@ async def run_agent(
             await append_run_event(run_id, org_id, "report", report.model_dump())
 
         await _finalize(run_id, "done", report, tokens_in, tokens_out,
-                        org_id=str(org_id), parent_run_id=run.get("parent_run_id"))
+                        org_id=org_id, parent_run_id=run.get("parent_run_id"))
         return report
 
 
@@ -670,7 +683,8 @@ async def _handle_subagent(
 
     child_run_id = await _create_child_run(run, child_skill["id"], args.get("inputs") or {})
     report = await run_agent(
-        child_run_id, child_skill, gateway, model=model, depth=depth + 1
+        child_run_id, child_skill, gateway, model=model, depth=depth + 1,
+        org_id=str(run["org_id"]),
     )
     return {
         "child_run_id": str(child_run_id),
@@ -685,6 +699,7 @@ async def _create_child_run(
 
     trigger = {"kind": "subagent", "payload": inputs, "surface": None}
     async with session_factory().begin() as s:
+        await scope_to_org(s, str(parent["org_id"]))
         run_id = (
             await s.execute(
                 text(
@@ -725,6 +740,7 @@ async def _handle_propose(
         from .db import enqueue
 
         async with session_factory().begin() as s:
+            await scope_to_org(s, str(run["org_id"]))
             await enqueue(
                 s, kind="execute_action", payload={"action_id": action_id},
                 org_id=str(run["org_id"]),

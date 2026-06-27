@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import text
 
 from .config import get_settings
-from .db import session_factory
+from .db import scope_to_org, session_factory
 
 SCHEMA_ID = "opsforge/skill/v1"
 ActionClass = Literal["read_only", "reversible", "destructive"]
@@ -148,7 +148,9 @@ _UPSERT_SKILL = text(
 
 async def install_skill_dir(directory: str | Path, source: str = "builtin") -> str:
     manifest, instructions = load_skill_dir(directory)
+    org = get_settings().org_id
     async with session_factory().begin() as s:
+        await scope_to_org(s, org)
         skill_id = (
             await s.execute(
                 _UPSERT_SKILL,
@@ -183,21 +185,25 @@ _SKILL_COLS = (
 
 
 async def get_skill(slug: str) -> dict[str, Any] | None:
+    org = get_settings().org_id
     async with session_factory().begin() as s:
+        await scope_to_org(s, org)
         row = (
             await s.execute(
                 text(
                     f"SELECT {_SKILL_COLS} FROM skills "
                     "WHERE slug = :slug AND org_id = :org AND rejected_at IS NULL"
                 ),
-                {"slug": slug, "org": get_settings().org_id},
+                {"slug": slug, "org": org},
             )
         ).first()
     return dict(row._mapping) if row else None
 
 
 async def get_skill_by_id(skill_id: Any) -> dict[str, Any] | None:
+    org = get_settings().org_id
     async with session_factory().begin() as s:
+        await scope_to_org(s, org)
         row = (
             await s.execute(
                 text(
@@ -211,14 +217,16 @@ async def get_skill_by_id(skill_id: Any) -> dict[str, Any] | None:
 
 
 async def list_skills() -> list[dict[str, Any]]:
+    org = get_settings().org_id
     async with session_factory().begin() as s:
+        await scope_to_org(s, org)
         rows = (
             await s.execute(
                 text(
                     f"SELECT {_SKILL_COLS} FROM skills WHERE org_id = :org "
                     "AND rejected_at IS NULL ORDER BY slug"
                 ),
-                {"org": get_settings().org_id},
+                {"org": org},
             )
         ).all()
     return [dict(r._mapping) for r in rows]

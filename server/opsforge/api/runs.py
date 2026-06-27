@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from ..db import session_factory
+from ..db import scope_to_org, session_factory
 from ..dispatch import create_run, resolve_nl
 from ..security import Principal, require_token
 from ..skills import get_skill
@@ -87,6 +87,7 @@ async def list_runs(
         clauses.append("skill_id = :skill_id")
         params["skill_id"] = sk["id"] if sk else None
     async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)
         rows = (
             await s.execute(
                 text(
@@ -104,6 +105,7 @@ async def list_runs(
 @router.get("/{run_id}")
 async def get_run(run_id: UUID, principal: Principal = Depends(require_token)):
     async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)
         row = (
             await s.execute(
                 text(
@@ -122,6 +124,7 @@ async def get_run(run_id: UUID, principal: Principal = Depends(require_token)):
 @router.post("/{run_id}/cancel")
 async def cancel_run(run_id: UUID, principal: Principal = Depends(require_token)):
     async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)
         res = await s.execute(
             text(
                 "UPDATE runs SET status='cancelled' "
@@ -135,8 +138,11 @@ async def cancel_run(run_id: UUID, principal: Principal = Depends(require_token)
     return {"status": "cancelled"}
 
 
-async def _fetch_events(run_id: UUID, after_seq: int) -> list[dict[str, Any]]:
+async def _fetch_events(
+    run_id: UUID, after_seq: int, org_id: str
+) -> list[dict[str, Any]]:
     async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
         rows = (
             await s.execute(
                 text(
@@ -157,15 +163,19 @@ async def stream_events(run_id: UUID, principal: Principal = Depends(require_tok
     async def event_source():
         last_seq = 0
         for _ in range(900):  # ~6 min cap
-            events = await _fetch_events(run_id, last_seq)
+            events = await _fetch_events(run_id, last_seq, principal.org_id)
             for ev in events:
                 last_seq = ev["seq"]
                 data = json.dumps({"seq": ev["seq"], "payload": ev["payload"]})
                 yield f"event: {ev['kind']}\ndata: {data}\n\n"
             async with session_factory().begin() as s:
+                await scope_to_org(s, principal.org_id)
                 status = (
                     await s.execute(
-                        text("SELECT status FROM runs WHERE id=:id"), {"id": run_id}
+                        text(
+                            "SELECT status FROM runs WHERE id=:id AND org_id=:org"
+                        ),
+                        {"id": run_id, "org": principal.org_id},
                     )
                 ).scalar_one_or_none()
             if status in _TERMINAL:

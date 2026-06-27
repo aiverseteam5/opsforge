@@ -18,7 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .connectors import ConnectorSession, open_connector
-from .db import session_factory
+from .db import scope_to_org, session_factory
 
 # --------------------------------------------------------------------------- #
 # natural_key builders (stable identities, shared across connectors)
@@ -329,9 +329,11 @@ async def sync_connector(connector: dict[str, Any]) -> dict[str, int]:
     mapper = mapper_for(connector["kind"])
     async with open_connector(connector) as cs:
         delta = await mapper(cs)
+    org_id = str(connector["org_id"])
     async with session_factory().begin() as session:
+        await scope_to_org(session, org_id)
         return await apply_delta(
-            session, str(connector["org_id"]), connector.get("id"), delta
+            session, org_id, connector.get("id"), delta
         )
 
 
@@ -356,9 +358,11 @@ _NEIGHBORHOOD_IDS = text(
 )
 
 
-async def neighborhood(natural_key: str, hops: int = 2) -> dict[str, Any]:
+async def neighborhood(natural_key: str, hops: int = 2, org_id: str = "") -> dict[str, Any]:
     """Nodes reachable within `hops` of a node, plus the edges among them."""
     async with session_factory().begin() as s:
+        if org_id:
+            await scope_to_org(s, org_id)
         ids = [
             r[0]
             for r in (
