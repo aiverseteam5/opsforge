@@ -17,10 +17,18 @@ spec:
         {{- include "opsforge.labels" . | nindent 8 }}
     spec:
       restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: migrate
           image: {{ include "opsforge.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["migrate"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           env:
             {{- include "opsforge.env" . | nindent 12 }}
