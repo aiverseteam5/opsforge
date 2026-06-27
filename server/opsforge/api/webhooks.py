@@ -9,12 +9,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import text
 
 from ..config import get_settings
 from ..db import session_factory
 from ..dispatch import dispatch_from_alert
+from ..ratelimit import webhook_rate_limit
 from ..security import verify_webhook_signature
 
 router = APIRouter(prefix="/api/v1/webhooks", tags=["webhooks"])
@@ -38,6 +39,7 @@ _INSERT_CHANGE = text(
 async def webhook_change(
     request: Request,
     x_opsforge_signature: str | None = Header(default=None),
+    _rl: None = Depends(webhook_rate_limit),
 ) -> dict[str, Any]:
     """Ingest a deploy/config change (e.g. from CI/CD) into the change timeline."""
     body = await request.body()
@@ -73,6 +75,7 @@ async def webhook_change(
 async def webhook_alert(
     request: Request,
     x_opsforge_signature: str | None = Header(default=None),
+    _rl: None = Depends(webhook_rate_limit),
 ) -> dict[str, Any]:
     """Generic alert ingest. Matches enabled event schedules and dispatches an
     investigation per match, reporting to each schedule's configured surface."""

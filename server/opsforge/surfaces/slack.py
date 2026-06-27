@@ -17,13 +17,14 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import text
 
 from ..actions import approve_action, deny_action, dry_run_action
 from ..config import get_settings
 from ..db import session_factory
 from ..dispatch import create_run, resolve_nl
+from ..ratelimit import webhook_rate_limit
 from ..reports import RcaReport, render_slack_blocks
 
 DEFAULT_SKILL = "incident-investigation"
@@ -301,6 +302,7 @@ async def slack_events(
     request: Request,
     x_slack_request_timestamp: str | None = Header(default=None),
     x_slack_signature: str | None = Header(default=None),
+    _rl: None = Depends(webhook_rate_limit),
 ) -> dict[str, Any]:
     body = await request.body()
     _require_signature(x_slack_request_timestamp, x_slack_signature, body)
@@ -312,6 +314,7 @@ async def slack_commands(
     request: Request,
     x_slack_request_timestamp: str | None = Header(default=None),
     x_slack_signature: str | None = Header(default=None),
+    _rl: None = Depends(webhook_rate_limit),
 ) -> dict[str, Any]:
     body = await request.body()
     _require_signature(x_slack_request_timestamp, x_slack_signature, body)
@@ -324,6 +327,7 @@ async def slack_interactivity(
     request: Request,
     x_slack_request_timestamp: str | None = Header(default=None),
     x_slack_signature: str | None = Header(default=None),
+    _rl: None = Depends(webhook_rate_limit),
 ) -> dict[str, Any]:
     body = await request.body()
     _require_signature(x_slack_request_timestamp, x_slack_signature, body)
