@@ -11,6 +11,11 @@ export function MissionControl() {
   });
   const connectors = useQuery({ queryKey: ["connectors"], queryFn: api.listConnectors });
   const schedules = useQuery({ queryKey: ["schedules"], queryFn: api.listSchedules });
+  const proposed = useQuery({
+    queryKey: ["skills-proposed-count"],
+    queryFn: () => api.listProposed(1, 1),
+    refetchInterval: 10_000,
+  });
 
   return (
     <div>
@@ -19,7 +24,7 @@ export function MissionControl() {
         sub="Live runs, connectors, and schedules · press ⌘K to dispatch"
       />
 
-      <div className="mb-5 grid grid-cols-3 gap-4">
+      <div className="mb-5 grid grid-cols-4 gap-4">
         <div className="card">
           <div className="text-xs uppercase text-muted">Connectors</div>
           <div className="mt-2 flex flex-wrap gap-1">
@@ -40,6 +45,17 @@ export function MissionControl() {
           <div className="mt-2 text-2xl">
             {(runs.data ?? []).filter((r) => ["queued", "running"].includes(r.status)).length}
           </div>
+        </div>
+        <div className="card">
+          <div className="text-xs uppercase text-muted">Proposed skills</div>
+          <div className={`mt-2 text-2xl ${(proposed.data?.total ?? 0) > 0 ? "text-amber-300" : ""}`}>
+            {proposed.data?.total ?? "—"}
+          </div>
+          {(proposed.data?.total ?? 0) > 0 && (
+            <Link className="mt-1 block text-xs text-amber-300 hover:underline" to="/skills/proposed">
+              Review →
+            </Link>
+          )}
         </div>
       </div>
 

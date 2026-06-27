@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     # events/commands. Empty in dev → posting is skipped (rendered, not sent).
     slack_bot_token: str = ""
     slack_signing_secret: str = ""
+    # Channel to notify when a codified skill is proposed for review. Empty → no notification.
+    skill_review_channel: str = ""
 
     # Trust graduation: an admin may grant auto_with_notify to a reversible tool
     # only after this many clean (succeeded) executions of it.
