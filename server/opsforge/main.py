@@ -26,7 +26,7 @@ from .api import (
     tokens,
     webhooks,
 )
-from .db import engine
+from .db import assert_restricted_role, engine
 from .security import redact
 from .skills import install_builtin_skills
 from .surfaces import slack as slack_surface
@@ -38,6 +38,7 @@ _SPA_DIR = "workbench/dist"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await assert_restricted_role()
     # Install/refresh built-in skill packs at startup (idempotent).
     try:
         installed = await install_builtin_skills()

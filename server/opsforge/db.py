@@ -9,6 +9,7 @@ execution) because a worker can die after claiming but before completing.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
@@ -22,6 +23,8 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from .config import get_settings
+
+_log = logging.getLogger("opsforge.db")
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -127,6 +130,37 @@ _SCOPE_ORG_SQL = text("SELECT set_config('opsforge.current_org', :org, true)")
 async def scope_to_org(session: AsyncSession, org_id: Any) -> None:
     """Set the per-transaction org GUC that RLS policies enforce."""
     await session.execute(_SCOPE_ORG_SQL, {"org": str(org_id)})
+
+
+_CHECK_ROLE_SQL = text(
+    "SELECT rolsuper OR rolbypassrls AS bypasses_rls "
+    "FROM pg_roles WHERE rolname = current_user"
+)
+
+
+async def assert_restricted_role() -> None:
+    """Warn (dev) or raise (prod) if the DB connection can bypass RLS.
+
+    Both SUPERUSER and BYPASSRLS skip FORCE RLS entirely, silently breaking
+    org isolation. Production MUST connect as opsforge_app which is
+    NOSUPERUSER NOBYPASSRLS. Call once at process startup.
+    """
+    async with engine().connect() as conn:
+        bypasses = (await conn.execute(_CHECK_ROLE_SQL)).scalar_one()
+    if bypasses:
+        msg = (
+            "DB role '%s' can bypass RLS (SUPERUSER or BYPASSRLS) — "
+            "org isolation is NOT enforced. Connect as opsforge_app "
+            "(NOSUPERUSER NOBYPASSRLS). Run migration 0009 to create the role."
+        )
+        # current_user is already captured in the query result comment; fetch it
+        # for the log message.
+        async with engine().connect() as conn:
+            role = (await conn.execute(text("SELECT current_user"))).scalar_one()
+        if get_settings().environment == "dev":
+            _log.warning(msg, role)
+        else:
+            raise RuntimeError(msg % role)
 
 
 async def enqueue(
