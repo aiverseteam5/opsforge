@@ -17,6 +17,7 @@ from .api import (
     audit,
     catalog,
     connectors,
+    delegation,
     graph,
     knowledge,
     llm_providers,
@@ -77,7 +78,7 @@ def create_app() -> FastAPI:
 
     for module in (
         runs, connectors, skills, schedules, actions, webhooks, graph, audit, knowledge,
-        llm_providers, catalog, tokens,
+        llm_providers, catalog, tokens, delegation,
     ):
         app.include_router(module.router)
     app.include_router(slack_surface.router)

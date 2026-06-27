@@ -15,13 +15,14 @@ import secrets
 from datetime import UTC, datetime
 from typing import Any
 
+import jwt as _jwt
 from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import get_settings
-from .db import get_session
+from .db import get_session, scope_to_org
 
 # --------------------------------------------------------------------------- #
 # Fernet vault
@@ -137,7 +138,7 @@ def redact(value: Any) -> Any:
 
 
 class Principal:
-    """The authenticated caller resolved from an API token."""
+    """The authenticated caller resolved from an API token or delegation JWT."""
 
     def __init__(
         self,
@@ -145,11 +146,14 @@ class Principal:
         org_id: str,
         role: str | None,
         token_id: str | None = None,
+        scope: list[str] | None = None,
     ):
         self.user_id = user_id
         self.org_id = org_id
         self.role = role
         self.token_id = token_id
+        # Non-None only for delegation tokens; gates which tools are callable.
+        self.scope = scope
 
 
 _LOOKUP_TOKEN_SQL = text(
@@ -165,6 +169,53 @@ _TOUCH_TOKEN_SQL = text(
 )
 
 
+async def _verify_delegation_jwt(jwt_str: str, session: AsyncSession) -> Principal:
+    """Resolve a delegation JWT to a Principal with a bounded scope list."""
+    from .delegation import verify_delegation_token
+
+    try:
+        # Decode without signature verification to extract org_id for the DB lookup.
+        unverified: dict = _jwt.decode(
+            jwt_str, options={"verify_signature": False}
+        )
+        org_id: str | None = unverified.get("org_id")
+        if not org_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid delegation token",
+            )
+        # Verify signature, expiry, and org_id match in one call.
+        claims = verify_delegation_token(jwt_str, org_id)
+    except (_jwt.PyJWTError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid delegation token"
+        ) from None
+
+    # Check that this jti has been issued and not revoked.
+    await scope_to_org(session, org_id)
+    row = (
+        await session.execute(
+            text(
+                "SELECT 1 FROM delegation_tokens "
+                "WHERE jti = :jti AND revoked_at IS NULL"
+            ),
+            {"jti": claims["jti"]},
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Delegation token revoked or not found",
+        )
+
+    return Principal(
+        user_id=None,
+        org_id=org_id,
+        role=None,
+        scope=claims["scope"],
+    )
+
+
 async def require_token(
     authorization: str = Header(default=""),
     session: AsyncSession = Depends(get_session),
@@ -174,7 +225,14 @@ async def require_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or malformed Authorization header",
         )
-    token_hash = hash_token(authorization.removeprefix("Bearer ").strip())
+    raw = authorization.removeprefix("Bearer ").strip()
+
+    # Delegation tokens are JWTs (three base64url segments starting with "eyJ").
+    # Regular API tokens start with "ofg_".
+    if raw.startswith("eyJ"):
+        return await _verify_delegation_jwt(raw, session)
+
+    token_hash = hash_token(raw)
     row = (
         await session.execute(_LOOKUP_TOKEN_SQL, {"token_hash": token_hash})
     ).first()
@@ -183,7 +241,11 @@ async def require_token(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
     if row.expires_at is not None:
-        expires = row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=UTC)
+        expires = (
+            row.expires_at
+            if row.expires_at.tzinfo
+            else row.expires_at.replace(tzinfo=UTC)
+        )
         if expires < datetime.now(UTC):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
