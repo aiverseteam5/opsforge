@@ -104,6 +104,37 @@ def render_report(report: dict[str, Any], run_id: str | None = None) -> list[dic
     return blocks
 
 
+async def notify_skill_proposed(
+    skill_id: str, slug: str, run_id: str, poster: Poster | None = None
+) -> dict[str, Any]:
+    """Post a Block Kit alert to the skill-review channel when a skill is proposed."""
+    channel = get_settings().skill_review_channel
+    if not channel:
+        return {"ok": False, "skipped": "no skill_review_channel configured"}
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*New skill proposed for review* :robot_face:\n"
+                    f"`{slug}` was codified from run `{run_id[:8]}`.\n"
+                    f"Review it in the workbench under *Skills → Proposed skills*."
+                ),
+            },
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f"skill id: `{skill_id}` · run: `{run_id}`"}
+            ],
+        },
+    ]
+    send = poster or post_message
+    result = await send(channel, f"New skill proposed: {slug}", blocks)
+    return {"ok": True, "channel": channel, "result": result}
+
+
 async def notify_run(run_id: UUID, poster: Poster | None = None) -> dict[str, Any]:
     """Post a finished run's RCA to its Slack channel, if it has one."""
     async with session_factory().begin() as s:

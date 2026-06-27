@@ -355,6 +355,11 @@ async def handle_codify_skill(payload: dict[str, Any]) -> None:
         detail={"slug": slug, "run_id": run_id},
     )
     logger.info("codify_skill: proposed skill %r (id=%s) from run %s", slug, skill_id_str, run_id)
+    try:
+        from .surfaces.slack import notify_skill_proposed
+        await notify_skill_proposed(skill_id_str or "", slug, run_id)
+    except Exception:  # noqa: BLE001 - delivery failure must not fail the job
+        logger.warning("codify_skill: slack notify failed for %r", slug, exc_info=True)
 
 
 # Dispatch table by job.kind.
