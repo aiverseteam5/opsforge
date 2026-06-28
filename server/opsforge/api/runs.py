@@ -22,6 +22,7 @@ from ..skills import get_skill
 router = APIRouter(prefix="/api/v1/runs", tags=["runs"])
 
 _TERMINAL = {"done", "failed", "cancelled"}
+_SUMMARY_MAX_LEN = 200
 
 
 class RunCreate(BaseModel):
@@ -38,6 +39,8 @@ async def create_run_endpoint(
     _rl: None = Depends(run_dispatch_rate_limit),
     principal: Principal = Depends(require_token),
 ):
+    if principal.role is None:
+        raise HTTPException(status_code=403, detail="delegation tokens cannot dispatch runs")
     # NL path: resolve to a skill + entities (or return candidates if ambiguous).
     if body.nl:
         resolved = await resolve_nl(
@@ -188,3 +191,64 @@ async def stream_events(run_id: UUID, principal: Principal = Depends(require_tok
             await asyncio.sleep(0.4)
 
     return StreamingResponse(event_source(), media_type="text/event-stream")
+
+
+@router.get("/{run_id}/timeline")
+async def get_run_timeline(
+    run_id: UUID,
+    limit: int = Query(default=100, ge=1, le=200),
+    after_seq: int = Query(default=0, ge=0),
+    principal: Principal = Depends(require_token),
+):
+    """Shaped timeline of run_events for the war-room view.
+
+    Pagination: use `after_seq` cursor + `next_after_seq` from the response for
+    incremental load. Returns at most `limit` events (max 200).
+    """
+    async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)
+        run_row = (
+            await s.execute(
+                text("SELECT id FROM runs WHERE id=:id AND org_id=:org"),
+                {"id": run_id, "org": principal.org_id},
+            )
+        ).first()
+        if run_row is None:
+            raise HTTPException(status_code=404, detail="run_not_found")
+        rows = (
+            await s.execute(
+                text(
+                    "SELECT seq, created_at AS ts, kind, payload "
+                    "FROM run_events "
+                    "WHERE run_id=:id AND seq > :after "
+                    "ORDER BY seq LIMIT :limit"
+                ),
+                {"id": run_id, "after": after_seq, "limit": limit},
+            )
+        ).all()
+
+    events = []
+    next_seq = after_seq
+    for r in rows:
+        payload = r.payload or {}
+        actor = "human" if r.kind in ("proposal",) else "agent"
+        summary = (
+            payload.get("summary")
+            or payload.get("tool")
+            or payload.get("hypothesis")
+            or r.kind
+        )
+        events.append(
+            {
+                "seq": r.seq,
+                "ts": r.ts.isoformat() if r.ts else None,
+                "kind": r.kind,
+                "actor": actor,
+                "summary": str(summary)[:_SUMMARY_MAX_LEN],
+                "payload": payload,
+                "proposal_id": payload.get("proposal_id"),
+            }
+        )
+        next_seq = r.seq
+
+    return {"run_id": str(run_id), "next_after_seq": next_seq, "events": events}

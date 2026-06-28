@@ -7,6 +7,7 @@ boundary calls before persisting or logging external data.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import re
@@ -14,13 +15,14 @@ import secrets
 from datetime import UTC, datetime
 from typing import Any
 
+import jwt as _jwt
 from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import get_settings
-from .db import get_session
+from .db import get_session, scope_to_org
 
 # --------------------------------------------------------------------------- #
 # Fernet vault
@@ -50,7 +52,12 @@ def decrypt(token: bytes) -> str:
 
 
 def hash_token(raw: str) -> str:
-    return hashlib.sha256(raw.encode()).hexdigest()
+    secret = get_settings().token_hmac_secret
+    if not secret:
+        # Dev fallback when OPSFORGE_TOKEN_HMAC_SECRET is not configured.
+        return hashlib.sha256(raw.encode()).hexdigest()
+    key = base64.urlsafe_b64decode(secret)
+    return hmac.new(key, raw.encode(), hashlib.sha256).hexdigest()
 
 
 def generate_token() -> tuple[str, str]:
@@ -131,7 +138,7 @@ def redact(value: Any) -> Any:
 
 
 class Principal:
-    """The authenticated caller resolved from an API token."""
+    """The authenticated caller resolved from an API token or delegation JWT."""
 
     def __init__(
         self,
@@ -139,11 +146,14 @@ class Principal:
         org_id: str,
         role: str | None,
         token_id: str | None = None,
+        scope: list[str] | None = None,
     ):
         self.user_id = user_id
         self.org_id = org_id
         self.role = role
         self.token_id = token_id
+        # Non-None only for delegation tokens; gates which tools are callable.
+        self.scope = scope
 
 
 _LOOKUP_TOKEN_SQL = text(
@@ -151,12 +161,57 @@ _LOOKUP_TOKEN_SQL = text(
     SELECT t.id, t.user_id, t.org_id, t.expires_at, u.role
     FROM api_tokens t
     LEFT JOIN users u ON u.id = t.user_id
-    WHERE t.token_hash = :token_hash
+    WHERE t.token_hash = :token_hash AND t.token_version = 1
     """
 )
 _TOUCH_TOKEN_SQL = text(
     "UPDATE api_tokens SET last_used_at = now() WHERE token_hash = :token_hash"
 )
+
+
+async def _verify_delegation_jwt(jwt_str: str, session: AsyncSession) -> Principal:
+    """Resolve a delegation JWT to a Principal with a bounded scope list."""
+    from .delegation import verify_delegation_token
+
+    try:
+        # Verify signature and expiry first; extract org_id from verified claims only.
+        # (Pre-verification decode is omitted — the org_id from unverified bytes
+        # is always identical to the verified one, making the mismatch check dead code.)
+        claims = verify_delegation_token(jwt_str, expected_org_id=None)
+        org_id: str | None = claims.get("org_id")
+        if not org_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid delegation token",
+            )
+    except (_jwt.PyJWTError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid delegation token"
+        ) from None
+
+    # Check that this jti has been issued, not revoked, and not expired at DB level.
+    await scope_to_org(session, org_id)
+    row = (
+        await session.execute(
+            text(
+                "SELECT 1 FROM delegation_tokens "
+                "WHERE jti = :jti AND revoked_at IS NULL AND expires_at > now()"
+            ),
+            {"jti": claims["jti"]},
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Delegation token revoked or not found",
+        )
+
+    return Principal(
+        user_id=None,
+        org_id=org_id,
+        role=None,
+        scope=claims["scope"],
+    )
 
 
 async def require_token(
@@ -168,7 +223,14 @@ async def require_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or malformed Authorization header",
         )
-    token_hash = hash_token(authorization.removeprefix("Bearer ").strip())
+    raw = authorization.removeprefix("Bearer ").strip()
+
+    # Delegation tokens are JWTs (three base64url segments starting with "eyJ").
+    # Regular API tokens start with "ofg_".
+    if raw.startswith("eyJ"):
+        return await _verify_delegation_jwt(raw, session)
+
+    token_hash = hash_token(raw)
     row = (
         await session.execute(_LOOKUP_TOKEN_SQL, {"token_hash": token_hash})
     ).first()
@@ -177,7 +239,11 @@ async def require_token(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
     if row.expires_at is not None:
-        expires = row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=UTC)
+        expires = (
+            row.expires_at
+            if row.expires_at.tzinfo
+            else row.expires_at.replace(tzinfo=UTC)
+        )
         if expires < datetime.now(UTC):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"

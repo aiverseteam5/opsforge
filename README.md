@@ -33,16 +33,26 @@ separate spec.
 # 1. Generate required secrets into .env
 python -c "
 from cryptography.fernet import Fernet
-import secrets
+import secrets, os, base64
 print('OPSFORGE_FERNET_KEY=' + Fernet.generate_key().decode())
 print('OPSFORGE_WEBHOOK_SECRET=' + secrets.token_hex(32))
+print('OPSFORGE_TOKEN_HMAC_SECRET=' + base64.urlsafe_b64encode(os.urandom(32)).decode())
 " > .env
+
+# Add your LLM provider key (Anthropic, OpenAI, or any litellm-compatible)
+echo "ANTHROPIC_API_KEY=sk-..." >> .env        # or OPENAI_API_KEY=...
+echo "OPSFORGE_DEV_LLM_FALLBACK=true" >> .env  # picks up the env key above in dev
 
 # 2. Bring up db + migrate + api + 3 workers
 docker compose up -d --build
 
 # 3. Health
 curl http://localhost:8080/healthz        # {"status":"ok"}
+
+# 4. Open the workbench at http://localhost:8080
+#    You'll need an API token — mint one:
+docker compose exec api opsforge token create --name mytoken --role admin
+#    Copy the printed token (shown once), paste it into the workbench login screen.
 ```
 
 ## Layout

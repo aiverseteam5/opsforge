@@ -42,8 +42,8 @@ async def test_valid_token_accepted_and_touched():
     async with session_factory().begin() as s:
         await s.execute(
             text(
-                "INSERT INTO api_tokens (org_id, token_hash, name) "
-                "VALUES (:org_id, :token_hash, :name)"
+                "INSERT INTO api_tokens (org_id, token_hash, name, token_version) "
+                "VALUES (:org_id, :token_hash, :name, 1)"
             ),
             {"org_id": org_id, "token_hash": token_hash, "name": name},
         )

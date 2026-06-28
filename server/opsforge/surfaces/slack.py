@@ -8,10 +8,12 @@ Approve buttons (those arrive with the executor in M5).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
 import re
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID
@@ -29,6 +31,13 @@ from ..reports import RcaReport, render_slack_blocks
 
 DEFAULT_SKILL = "incident-investigation"
 _MENTION_RE = re.compile(r"<@[A-Z0-9]+>")
+_TARGET_RE = re.compile(r"^[A-Za-z0-9._\-]{1,128}$")
+_SLACK_TIMESTAMP_TOLERANCE_S = 300  # 5 minutes
+_SLACK_RESPONSE_TIMEOUT_S = 10  # outbound response_url / API calls
+_ALLOWED_RESPONSE_URL_PREFIX = "https://hooks.slack.com/"  # SSRF guard
+
+# Strong reference set so create_task'd coroutines are not GC'd before completion.
+_background_tasks: set[asyncio.Task] = set()
 
 # A poster sends a rendered message to a channel. Swappable in tests.
 Poster = Callable[[str, str, list[dict[str, Any]]], Awaitable[dict[str, Any]]]
@@ -43,6 +52,12 @@ def verify_signature(timestamp: str | None, signature: str | None, body: bytes) 
         # In production, an unconfigured secret must FAIL CLOSED — never bypass.
         return get_settings().environment == "dev"
     if not timestamp or not signature:
+        return False
+    # Reject requests older than 5 minutes to prevent replay attacks.
+    try:
+        if abs(time.time() - float(timestamp)) > _SLACK_TIMESTAMP_TOLERANCE_S:
+            return False
+    except ValueError:
         return False
     basestring = f"v0:{timestamp}:{body.decode('utf-8', 'replace')}".encode()
     expected = "v0=" + hmac.new(secret.encode(), basestring, hashlib.sha256).hexdigest()
@@ -59,7 +74,7 @@ async def post_message(
     if not token:
         # Dev / tests with no workspace: render but don't send.
         return {"ok": False, "skipped": "no slack_bot_token", "channel": channel}
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=_SLACK_RESPONSE_TIMEOUT_S) as client:
         resp = await client.post(
             "https://slack.com/api/chat.postMessage",
             headers={"Authorization": f"Bearer {token}"},
@@ -170,7 +185,7 @@ def _candidate_blocks(nl: str, candidates: list[dict[str, Any]]) -> list[dict[st
     """Disambiguation buttons — the surface picks, OpsForge never guesses."""
     return [
         {"type": "section", "text": {"type": "mrkdwn",
-                                     "text": f"Which investigation for “{nl}”?"}},
+                                     "text": f'Which investigation for "{nl}"?'}},
         {
             "type": "actions",
             "elements": [
@@ -223,7 +238,144 @@ async def handle_slash(form: dict[str, Any]) -> dict[str, Any]:
                 "blocks": _candidate_blocks(query, resolved["candidates"])}
     return {
         "response_type": "ephemeral",
-        "text": f"On it — investigating “{query}”. I’ll post the RCA here when ready.",
+        "text": f'On it — investigating "{query}". I\'ll post the RCA here when ready.',
+    }
+
+
+async def _opsforge_async_dispatch(
+    target: str, response_url: str, user_id: str | None
+) -> None:
+    """Background task for /opsforge investigate: dispatch run and post back to response_url."""
+    import logging as _logging
+    _log = _logging.getLogger("opsforge.slack.opsforge_cmd")
+    try:
+        result = await create_run(
+            DEFAULT_SKILL,
+            {"query": f"investigate {target}"},
+            trigger_kind="manual",
+            surface="slack",
+            user_id=user_id,
+        )
+        if not result:
+            raise ValueError("skill not found")
+        run_id = result["run_id"]
+        _log.info("opsforge slash: dispatched run %s for target %s", run_id, target)
+    except Exception as exc:
+        _log.warning("opsforge slash: dispatch failed for %s: %s", target, exc)
+        _log.warning("opsforge slash: dispatch failed for %s: %s", target, exc)
+        async with httpx.AsyncClient(timeout=_SLACK_RESPONSE_TIMEOUT_S) as client:
+            await client.post(
+                response_url,
+                json={"response_type": "ephemeral",
+                      "text": "Investigation could not be started. Check server logs for details."},
+            )
+        return
+
+    # Poll until terminal (max 3 min), post "Still investigating..." at 2 min mark.
+    _TERMINAL = {"done", "failed", "cancelled"}
+    _POLL_INTERVAL = 5.0
+    _MAX_WAIT = 180.0
+    _WARN_AT = 120.0  # warn at 2 min, not at the timeout itself
+    warned = False
+    elapsed = 0.0
+    row = None  # initialise before loop so post-loop code is never unbound
+
+    from ..config import get_settings as _get_settings
+    from ..db import scope_to_org, session_factory
+    from sqlalchemy import text as _text
+
+    org_id = _get_settings().org_id
+    while elapsed < _MAX_WAIT + _POLL_INTERVAL:
+        await asyncio.sleep(_POLL_INTERVAL)
+        elapsed += _POLL_INTERVAL
+        if not warned and elapsed >= _WARN_AT:
+            warned = True
+            async with httpx.AsyncClient(timeout=_SLACK_RESPONSE_TIMEOUT_S) as client:
+                await client.post(
+                    response_url,
+                    json={"response_type": "ephemeral", "text": "Still investigating... hang tight."},
+                )
+        try:
+            async with session_factory().begin() as s:
+                await scope_to_org(s, org_id)
+                row = (
+                    await s.execute(
+                        _text("SELECT status, report_json FROM runs WHERE id=:id"),
+                        {"id": run_id},
+                    )
+                ).first()
+        except Exception as exc:
+            _log.warning("opsforge slash: DB poll error for run %s: %s", run_id, exc)
+            continue
+        if row and row.status in _TERMINAL:
+            break
+
+    if not row:
+        return
+    if row.status == "done" and row.report_json:
+        try:
+            from ..reports import RcaReport, render_slack_blocks
+            blocks = render_slack_blocks(RcaReport.model_validate(row.report_json))
+            summary = row.report_json.get("hypothesis", "Investigation complete")
+        except Exception:
+            blocks = []
+            summary = "Investigation complete"
+        async with httpx.AsyncClient(timeout=_SLACK_RESPONSE_TIMEOUT_S) as client:
+            try:
+                await client.post(response_url, json={
+                    "response_type": "in_channel",
+                    "text": summary,
+                    "blocks": blocks,
+                })
+            except Exception as exc:
+                _log.warning("opsforge slash: response_url post failed: %s", exc)
+    else:
+        async with httpx.AsyncClient(timeout=_SLACK_RESPONSE_TIMEOUT_S) as client:
+            try:
+                await client.post(response_url, json={
+                    "response_type": "ephemeral",
+                    "text": f"Investigation ended with status: {row.status}.",
+                })
+            except Exception as exc:
+                _log.warning("opsforge slash: response_url post failed (non-done): %s", exc)
+
+
+async def handle_opsforge_slash(form: dict[str, Any]) -> dict[str, Any]:
+    """`/opsforge investigate <target>` — immediate ack, async dispatch + response_url post.
+
+    Returns HTTP 200 immediately (Slack 3-second constraint), then dispatches in background.
+    """
+    text_raw = (form.get("text") or "").strip()
+    response_url = form.get("response_url", "")
+
+    if not text_raw.lower().startswith("investigate "):
+        return {
+            "response_type": "ephemeral",
+            "text": "Usage: `/opsforge investigate <target>` — e.g. `/opsforge investigate payment-svc`",
+        }
+
+    target_raw = text_raw[len("investigate "):].strip()
+    if not _TARGET_RE.match(target_raw):
+        return {
+            "response_type": "ephemeral",
+            "text": "Target must be alphanumeric with hyphens/dots, max 128 chars.",
+        }
+
+    if not response_url:
+        return {"response_type": "ephemeral", "text": "No response_url provided by Slack."}
+
+    if not response_url.startswith(_ALLOWED_RESPONSE_URL_PREFIX):
+        return {"response_type": "ephemeral", "text": "Invalid response_url."}
+
+    user_id = form.get("user_id")
+    task = asyncio.create_task(
+        _opsforge_async_dispatch(target_raw, response_url, user_id)
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return {
+        "response_type": "ephemeral",
+        "text": f"Investigating `{target_raw}`... I'll post results here when done.",
     }
 
 
@@ -321,6 +473,21 @@ async def slack_commands(
     _require_signature(x_slack_request_timestamp, x_slack_signature, body)
     form = dict((await request.form()).items())
     return await handle_slash(form)
+
+
+@router.post("/opsforge")
+async def slack_opsforge(
+    request: Request,
+    x_slack_request_timestamp: str | None = Header(default=None),
+    x_slack_signature: str | None = Header(default=None),
+    _rl: None = Depends(webhook_rate_limit),
+) -> dict[str, Any]:
+    """`/opsforge` slash command handler. Returns 200 immediately (3-second constraint),
+    then dispatches a background task to investigate and post back to response_url."""
+    body = await request.body()
+    _require_signature(x_slack_request_timestamp, x_slack_signature, body)
+    form = dict((await request.form()).items())
+    return await handle_opsforge_slash(form)
 
 
 @router.post("/interactivity")

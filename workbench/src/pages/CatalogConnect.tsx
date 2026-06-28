@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, CatalogDetail, ConfigField } from "../api";
-import { ErrorState, Loading, PageHeader, StatusBadge } from "../components/ui";
+import { ErrorState, Loading, PageHeader, StatusBadge, useConfirm, useToast } from "../components/ui";
 
 // A2 — the real config + credential-capture + test flow. Honours the same capability truth
 // as the catalog grid (stubs are not configurable), and the credential-safety contract:
@@ -76,6 +76,8 @@ const isCredField = (f: ConfigField) => f.name !== "endpoint" && f.name !== "too
 function InstanceConfigForm({ d }: { d: CatalogDetail }) {
   const qc = useQueryClient();
   const nav = useNavigate();
+  const { confirm, dialog } = useConfirm();
+  const toast = useToast();
   const editing = !!d.instance_id;
 
   // For edit, prefill only the PLAIN columns (endpoint, tool_allowlist) from the existing
@@ -137,11 +139,20 @@ function InstanceConfigForm({ d }: { d: CatalogDetail }) {
   });
   const disconnect = useMutation({
     mutationFn: () => api.deleteConnector(d.instance_id!),
-    onSuccess: () => { refresh(); nav("/catalog"); },
+    onSuccess: () => { refresh(); nav("/catalog"); toast("Connector disconnected"); },
+    onError: (e) => toast(String(e), "error"),
   });
+
+  const onDisconnect = async () => {
+    const ok = await confirm(
+      `Disconnect "${d.display_name}" and purge its credential from the vault?\n\nThis cannot be undone.`
+    );
+    if (ok) disconnect.mutate();
+  };
 
   return (
     <div className="card max-w-xl">
+      {dialog}
       <div className="flex items-center justify-between">
         <div className="text-sm font-medium">{d.display_name}</div>
         <StatusBadge status={d.status} />
@@ -177,19 +188,19 @@ function InstanceConfigForm({ d }: { d: CatalogDetail }) {
             <button className="btn" disabled={update.isPending} onClick={() => update.mutate()}>
               {update.isPending ? "Saving…" : "Save changes"}
             </button>
-            <button className="btn" style={{ borderColor: "#0369a1" }}
-              disabled={test.isPending} onClick={() => test.mutate()}>
+            <button className="btn-primary" disabled={test.isPending} onClick={() => test.mutate()}>
               {test.isPending ? "Testing…" : "Test connection"}
             </button>
-            <button className="btn" style={{ borderColor: "#9f1239" }}
-              disabled={disconnect.isPending}
-              onClick={() => window.confirm("Disconnect and purge this credential from the vault?") && disconnect.mutate()}>
+            <button className="btn-danger" disabled={disconnect.isPending} onClick={onDisconnect}>
               Disconnect
             </button>
           </>
         ) : (
-          <button className="btn" style={{ borderColor: "#15803d" }}
-            disabled={create.isPending || !canCreate} onClick={() => create.mutate()}>
+          <button
+            className="btn-primary"
+            disabled={create.isPending || !canCreate}
+            onClick={() => create.mutate()}
+          >
             {create.isPending ? "Connecting…" : "Connect"}
           </button>
         )}

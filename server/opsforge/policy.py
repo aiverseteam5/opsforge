@@ -104,14 +104,28 @@ def check_tool_call(
     tool_fqn: str,
     params: dict[str, Any] | None = None,
     target_ref: str | None = None,
+    *,
+    scope: list[str] | None = None,
 ) -> dict[str, Any]:
     """Pre-check a connector tool call the agent wants to make.
 
     Returns a policy_trace dict: {allowed, reason, rules[], action_class}.
     Only read_only tools listed under manifest `tools:` are callable during a
     run; anything else (proposals, unknown, forbidden target) is blocked.
+
+    When `scope` is provided (delegation token callers), the tool must also
+    appear in that list — scope narrows what an already-allowed token may do.
     """
     rules: list[str] = []
+
+    if scope is not None and tool_fqn not in scope:
+        return {
+            "allowed": False,
+            "reason": f"tool {tool_fqn} not permitted by delegation scope",
+            "rules": ["scope_not_permitted"],
+            "action_class": None,
+        }
+
     index = _index_tools(manifest)
     entry = index.get(tool_fqn)
 

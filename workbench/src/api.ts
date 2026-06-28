@@ -130,6 +130,45 @@ export interface CreatedToken extends Token {
   token: string; // raw token shown once — copy it now, it cannot be retrieved
 }
 
+// E2: Run timeline event (war-room view).
+export interface TimelineEvent {
+  seq: number;
+  ts: string | null;
+  kind: string;
+  actor: "agent" | "human";
+  summary: string;
+  payload: Record<string, any>;
+  proposal_id: string | null;
+}
+export interface RunTimeline {
+  run_id: string;
+  next_after_seq: number;
+  events: TimelineEvent[];
+}
+
+// E3: Predictive health score.
+export interface HealthScore {
+  score: number | null;
+  label: "healthy" | "degraded" | "critical" | "insufficient_data";
+  message: string;
+  top_patterns: { id: string; similarity: number; summary: string }[];
+}
+
+// E6: Trust ladder entry.
+export interface TrustLadderEntry {
+  tool: string;
+  action_class: string;
+  total_executions: number;
+  clean_executions: number;
+  rollbacks: number;
+  graduation_threshold: number;
+  eligible_for_graduation: boolean;
+}
+export interface TrustLadder {
+  items: TrustLadderEntry[];
+  graduation_threshold: number;
+}
+
 // Phase 3: codified skill awaiting human review before activation.
 export interface ProposedSkill {
   id: string;
@@ -188,6 +227,15 @@ export const api = {
   createRunNl: (nl: string) =>
     req<NlResult>("/runs", { method: "POST", body: JSON.stringify({ nl }) }),
   cancelRun: (id: string) => req(`/runs/${id}/cancel`, { method: "POST" }),
+  getRunTimeline: (id: string, afterSeq = 0, limit = 100) =>
+    req<RunTimeline>(`/runs/${id}/timeline?after_seq=${afterSeq}&limit=${limit}`),
+  getHealthScore: () => req<HealthScore>("/health-score"),
+  getTrustLadder: () => req<TrustLadder>("/trust-ladder"),
+  codifySkillFromUrl: (url: string) =>
+    req<{ job_id: string; status: string; message: string }>("/skills/from-url", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
 
   discoverConnector: (id: string) =>
     req<{ discovered_schema: any }>(`/connectors/${id}/discover`, { method: "POST" }),

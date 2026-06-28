@@ -54,7 +54,7 @@ RunEventKind = Literal[
 ]
 JobKind = Literal[
     "noop", "run_agent", "graph_sync", "execute_action", "ingest", "reconcile",
-    "ingest_tickets", "ingest_knowledge", "codify_skill",
+    "ingest_tickets", "ingest_knowledge", "codify_skill", "codify_from_url",
 ]
 JobStatus = Literal["queued", "running", "done", "failed"]
 ActionClass = Literal["read_only", "reversible", "destructive"]
@@ -135,6 +135,8 @@ class ApiToken(PkMixin, OrgMixin, Base):
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     name: Mapped[str | None] = mapped_column(String(200))
     last_used_at: Mapped[datetime.datetime | None] = mapped_column()
+    # 0 = legacy SHA-256 (invalidated by the HMAC migration); 1 = HMAC-SHA256.
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
 
 
 CredentialKind = Literal["static", "oidc_aws", "vault_approle"]

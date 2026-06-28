@@ -68,8 +68,8 @@ async def auth_headers(db_required: None) -> dict[str, str]:
     async with session_factory().begin() as s:
         await s.execute(
             text(
-                "INSERT INTO api_tokens (org_id, token_hash, name) "
-                "VALUES (:org, :h, 'test')"
+                "INSERT INTO api_tokens (org_id, token_hash, name, token_version) "
+                "VALUES (:org, :h, 'test', 1)"
             ),
             {"org": get_settings().org_id, "h": token_hash},
         )

@@ -1,6 +1,6 @@
 [project]
 name = "opsforge"
-version = "0.1.0"
+version = "0.2.0"
 description = "OpsForge — Agentic Operations Runtime"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -20,6 +20,9 @@ dependencies = [
     "litellm>=1.50",
     "pyyaml>=6.0",
     "httpx>=0.27",
+    "PyJWT>=2.8.0",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
 ]
 
 [project.optional-dependencies]

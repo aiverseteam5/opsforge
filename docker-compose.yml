@@ -6,6 +6,10 @@
 # opsforge_app role (M6.6: RLS enforced, not bypassed).
 x-app-env: &app-env
   OPSFORGE_FERNET_KEY: ${OPSFORGE_FERNET_KEY:?set OPSFORGE_FERNET_KEY in .env}
+  # HMAC-SHA256 key for API token hashing (Phase 4). Generate with:
+  #   python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+  # Falls back to plain SHA-256 in dev when unset; REQUIRED in production.
+  OPSFORGE_TOKEN_HMAC_SECRET: ${OPSFORGE_TOKEN_HMAC_SECRET:-}
   OPSFORGE_LOG_LEVEL: INFO
   # LLM: the model is a config string; the provider key is read by litellm from
   # the environment (secrets live in env, never the UI). Set these in .env.

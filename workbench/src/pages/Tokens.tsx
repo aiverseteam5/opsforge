@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, CreatedToken, Token } from "../api";
-import { Empty, ErrorState, Loading, PageHeader } from "../components/ui";
+import { Empty, ErrorState, Loading, PageHeader, useToast } from "../components/ui";
 
 function fmtDate(iso: string | null) {
   if (!iso) return "—";
@@ -34,11 +34,7 @@ function TokenRow({ token, onRevoke }: { token: Token; onRevoke: () => void }) {
       {confirming ? (
         <div className="flex shrink-0 items-center gap-2">
           <span className="text-xs text-rose-400">Revoke this token?</span>
-          <button
-            className="btn text-xs"
-            style={{ borderColor: "#9f1239" }}
-            onClick={onRevoke}
-          >
+          <button className="btn-danger text-xs" onClick={onRevoke}>
             Yes, revoke
           </button>
           <button className="btn text-xs" onClick={() => setConfirming(false)}>
@@ -47,8 +43,7 @@ function TokenRow({ token, onRevoke }: { token: Token; onRevoke: () => void }) {
         </div>
       ) : (
         <button
-          className="btn shrink-0 text-xs"
-          style={{ borderColor: "#9f1239" }}
+          className="btn-danger shrink-0 text-xs"
           onClick={() => setConfirming(true)}
         >
           Revoke
@@ -92,6 +87,7 @@ function NewTokenBanner({ created }: { created: CreatedToken }) {
 
 export function Tokens() {
   const qc = useQueryClient();
+  const toast = useToast();
   const [name, setName] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const [justCreated, setJustCreated] = useState<CreatedToken | null>(null);
@@ -112,12 +108,18 @@ export function Tokens() {
       setName("");
       setExpiresAt("");
       qc.invalidateQueries({ queryKey: ["tokens"] });
+      toast("Token created — copy it now, it cannot be retrieved again", "info");
     },
+    onError: (e) => toast(String(e), "error"),
   });
 
   const revoke = useMutation({
     mutationFn: (id: string) => api.revokeToken(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["tokens"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["tokens"] });
+      toast("Token revoked");
+    },
+    onError: (e) => toast(String(e), "error"),
   });
 
   return (
@@ -148,7 +150,7 @@ export function Tokens() {
             disabled={create.isPending}
           />
           <button
-            className="btn"
+            className="btn-primary"
             disabled={create.isPending}
             onClick={() => create.mutate()}
           >

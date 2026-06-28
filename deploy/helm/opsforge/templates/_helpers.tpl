@@ -17,7 +17,7 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{ .Values.image.repository }}:{{ .Values.image.tag }}
 {{- end -}}
 
-{{/* Database URL: external if provided, else the in-cluster Postgres service. */}}
+{{/* Superuser DB URL — migrate Job only (alembic DDL + role management). */}}
 {{- define "opsforge.databaseUrl" -}}
 {{- if .Values.externalDatabaseUrl -}}
 {{ .Values.externalDatabaseUrl }}
@@ -26,7 +26,19 @@ postgresql+psycopg://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}
 {{- end -}}
 {{- end -}}
 
-{{/* Shared OPSFORGE_* env for api + worker + migrate. */}}
+{{/* Restricted app-role URL — api and worker (NOSUPERUSER NOBYPASSRLS, RLS enforced). */}}
+{{- define "opsforge.appDatabaseUrl" -}}
+{{- if .Values.externalAppDatabaseUrl -}}
+{{ .Values.externalAppDatabaseUrl }}
+{{- else if .Values.externalDatabaseUrl -}}
+{{ .Values.externalDatabaseUrl }}
+{{- else -}}
+postgresql+psycopg://{{ .Values.postgres.appUser }}:{{ .Values.postgres.appPassword }}@{{ include "opsforge.fullname" . }}-db:5432/{{ .Values.postgres.database }}
+{{- end -}}
+{{- end -}}
+
+{{/* Shared OPSFORGE_* env for api + worker + migrate.
+     NOTE: api and worker override OPSFORGE_DATABASE_URL with the app-role URL. */}}
 {{- define "opsforge.env" -}}
 - name: OPSFORGE_ENVIRONMENT
   value: "production"
@@ -39,6 +51,11 @@ postgresql+psycopg://{{ .Values.postgres.user }}:{{ .Values.postgres.password }}
     secretKeyRef:
       name: {{ include "opsforge.fullname" . }}-secrets
       key: fernet-key
+- name: OPSFORGE_TOKEN_HMAC_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "opsforge.fullname" . }}-secrets
+      key: token-hmac-secret
 - name: OPSFORGE_WEBHOOK_SECRET
   valueFrom:
     secretKeyRef:

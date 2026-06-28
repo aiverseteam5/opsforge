@@ -36,6 +36,7 @@ async def _insert_run(
     channel: str | None,
     user_id: str | None,
     model: str | None,
+    delegation_scope: list[str] | None = None,
 ) -> str:
     import json
 
@@ -51,8 +52,9 @@ async def _insert_run(
         run_id = (
             await s.execute(
                 text(
-                    "INSERT INTO runs (org_id, skill_id, status, trigger, model) "
-                    "VALUES (:org,:skill,'queued',CAST(:trigger AS jsonb),:model) "
+                    "INSERT INTO runs (org_id, skill_id, status, trigger, model, delegation_scope) "
+                    "VALUES (:org,:skill,'queued',CAST(:trigger AS jsonb),:model,"
+                    "CAST(:delegation_scope AS json)) "
                     "RETURNING id"
                 ),
                 {
@@ -60,6 +62,9 @@ async def _insert_run(
                     "skill": skill_id,
                     "trigger": json.dumps(trigger),
                     "model": model,
+                    "delegation_scope": (
+                        json.dumps(delegation_scope) if delegation_scope is not None else None
+                    ),
                 },
             )
         ).scalar_one()
@@ -76,6 +81,7 @@ async def create_run(
     channel: str | None = None,
     user_id: str | None = None,
     model: str | None = None,
+    delegation_scope: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """Resolve a skill by slug, create a queued run, enqueue the agent job."""
     skill = await get_skill(skill_slug)
@@ -91,6 +97,7 @@ async def create_run(
         channel=channel,
         user_id=user_id,
         model=model,
+        delegation_scope=delegation_scope,
     )
     actor = f"user:{user_id}" if user_id else f"system:{trigger_kind}"
     await record_audit(

@@ -17,9 +17,10 @@ import asyncio
 import uuid
 
 import pytest
+import pytest_asyncio
 from conftest import TEST_DB_URL
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from opsforge.db import scope_to_org, session_factory
@@ -29,59 +30,57 @@ pytestmark = pytest.mark.usefixtures("db_required")
 _READ_GUC = text("SELECT current_setting('opsforge.current_org', true)")
 
 
-async def test_guc_resets_to_empty_after_transaction_commit():
+@pytest_asyncio.fixture
+async def null_pool_engine():
+    """Async engine with NullPool — each connect() is a distinct physical connection."""
+    eng = create_async_engine(TEST_DB_URL, poolclass=NullPool)
+    yield eng
+    await eng.dispose()
+
+
+async def test_guc_resets_to_empty_after_transaction_commit(null_pool_engine):
     """After a transaction that set is_local GUC commits, the same physical
     connection must return an empty string — not the previous org."""
     org = str(uuid.uuid4())
 
-    # NullPool: every connect() call gives a fresh underlying DB connection so
-    # we can fully control which connection we're on.
-    eng = create_async_engine(TEST_DB_URL, poolclass=NullPool)
-    try:
-        async with eng.connect() as conn:
-            # Transaction 1: set the GUC with is_local=true (same as scope_to_org).
+    async with null_pool_engine.connect() as conn:
+        # Transaction 1: set the GUC with is_local=true (same as scope_to_org).
+        async with conn.begin():
+            await conn.execute(
+                text("SELECT set_config('opsforge.current_org', :o, true)"),
+                {"o": org},
+            )
+            inside = (await conn.execute(_READ_GUC)).scalar_one()
+            assert inside == org, "GUC not visible inside the transaction"
+
+        # Transaction committed; still the same underlying connection.
+        # is_local=true must have reverted the GUC to the session default ('').
+        outside = (await conn.execute(_READ_GUC)).scalar_one()
+        assert outside in (None, ""), (
+            f"GUC leaked across transaction boundary: got {outside!r}; "
+            "pooled connections would carry stale org identity"
+        )
+
+
+async def test_guc_resets_to_empty_after_transaction_rollback(null_pool_engine):
+    """Same guarantee holds when the transaction is rolled back (e.g. on error)."""
+    org = str(uuid.uuid4())
+
+    async with null_pool_engine.connect() as conn:
+        try:
             async with conn.begin():
                 await conn.execute(
                     text("SELECT set_config('opsforge.current_org', :o, true)"),
                     {"o": org},
                 )
-                inside = (await conn.execute(_READ_GUC)).scalar_one()
-                assert inside == org, "GUC not visible inside the transaction"
+                raise RuntimeError("simulated error — forces rollback")
+        except RuntimeError:
+            pass
 
-            # Transaction committed; still the same underlying connection.
-            # is_local=true must have reverted the GUC to the session default ('').
-            outside = (await conn.execute(_READ_GUC)).scalar_one()
-            assert outside in (None, ""), (
-                f"GUC leaked across transaction boundary: got {outside!r}; "
-                "pooled connections would carry stale org identity"
-            )
-    finally:
-        await eng.dispose()
-
-
-async def test_guc_resets_to_empty_after_transaction_rollback():
-    """Same guarantee holds when the transaction is rolled back (e.g. on error)."""
-    org = str(uuid.uuid4())
-
-    eng = create_async_engine(TEST_DB_URL, poolclass=NullPool)
-    try:
-        async with eng.connect() as conn:
-            try:
-                async with conn.begin():
-                    await conn.execute(
-                        text("SELECT set_config('opsforge.current_org', :o, true)"),
-                        {"o": org},
-                    )
-                    raise RuntimeError("simulated error — forces rollback")
-            except RuntimeError:
-                pass
-
-            outside = (await conn.execute(_READ_GUC)).scalar_one()
-            assert outside in (None, ""), (
-                f"GUC leaked after rollback: got {outside!r}"
-            )
-    finally:
-        await eng.dispose()
+        outside = (await conn.execute(_READ_GUC)).scalar_one()
+        assert outside in (None, ""), (
+            f"GUC leaked after rollback: got {outside!r}"
+        )
 
 
 async def test_concurrent_sessions_do_not_bleed_guc():
@@ -107,26 +106,19 @@ async def test_concurrent_sessions_do_not_bleed_guc():
     assert seen_a != seen_b, "sessions returned the same GUC value — possible bleed"
 
 
-async def test_scope_to_org_helper_uses_is_local():
-    """scope_to_org must use is_local=true; confirm by checking the GUC resets
-    after the session ends (regression guard — would catch a change to is_local=false)."""
+async def test_scope_to_org_helper_uses_is_local(null_pool_engine):
+    """scope_to_org must use is_local=true; confirmed by verifying the GUC resets
+    after the transaction that called it commits (regression guard against changing
+    is_local to false)."""
     org = str(uuid.uuid4())
 
-    eng = create_async_engine(TEST_DB_URL, poolclass=NullPool)
-    try:
-        async with eng.connect() as conn:
-            async with conn.begin():
-                # Replicate what scope_to_org does — same SQL, same param name.
-                await conn.execute(
-                    text("SELECT set_config('opsforge.current_org', :org, true)"),
-                    {"org": org},
-                )
+    async with AsyncSession(null_pool_engine) as session:
+        async with session.begin():
+            await scope_to_org(session, org)
 
-            # GUC must be gone after the transaction ends.
-            val = (await conn.execute(_READ_GUC)).scalar_one()
-            assert val in (None, ""), (
-                f"scope_to_org's is_local=true contract broken: GUC still {val!r} "
-                "after transaction end"
-            )
-    finally:
-        await eng.dispose()
+        # GUC must be gone now that the transaction has committed.
+        val = (await session.execute(_READ_GUC)).scalar_one()
+        assert val in (None, ""), (
+            f"scope_to_org's is_local=true contract broken: GUC still {val!r} "
+            "after transaction end"
+        )

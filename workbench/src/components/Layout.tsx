@@ -1,8 +1,15 @@
 import { NavLink, Route, Routes } from "react-router-dom";
-import { clearToken } from "../api";
+import { useQuery } from "@tanstack/react-query";
+import { clearToken, api } from "../api";
 import { CommandPalette } from "./CommandPalette";
+import {
+  IconGrid, IconBook, IconAlertTriangle, IconFlow, IconShieldCheck,
+  IconCpu, IconLayoutGrid, IconZap, IconStar, IconPlug, IconClock,
+  IconList, IconKey, IconActivity,
+} from "./icons";
 import { MissionControl } from "../pages/MissionControl";
 import { RunDetail } from "../pages/RunDetail";
+import { RunTimeline } from "../pages/RunTimeline";
 import { Skills } from "../pages/Skills";
 import { ProposedSkills } from "../pages/ProposedSkills";
 import { Connectors } from "../pages/Connectors";
@@ -16,61 +23,125 @@ import { Providers } from "../pages/Providers";
 import { Catalog } from "../pages/Catalog";
 import { CatalogConnect } from "../pages/CatalogConnect";
 import { Tokens } from "../pages/Tokens";
+import { TrustLadder } from "../pages/TrustLadder";
 
-const NAV: { to?: string; label?: string; end?: boolean; section?: string }[] = [
-  { to: "/", label: "Mission Control", end: true },
-  { section: "Knowledge & Truth" },
-  { to: "/knowledge", label: "Knowledge" },
-  { to: "/findings", label: "Findings" },
-  { to: "/processes", label: "Processes" },
-  { to: "/approvals", label: "Approval gate" },
-  { to: "/providers", label: "LLM Providers" },
-  { section: "Operations" },
-  { to: "/catalog", label: "Catalog" },
-  { to: "/skills", label: "Skills" },
-  { to: "/skills/proposed", label: "Proposed skills" },
-  { to: "/connectors", label: "Connectors" },
-  { to: "/schedules", label: "Schedules" },
-  { to: "/audit", label: "Audit" },
-  { to: "/tokens", label: "API Tokens" },
+type NavEntry =
+  | { kind: "section"; label: string }
+  | { kind: "link"; to: string; label: string; icon: React.ReactNode; end?: boolean; badge?: "approvals" | "proposed" };
+
+const NAV: NavEntry[] = [
+  { kind: "link", to: "/", label: "Mission Control", icon: <IconGrid />, end: true },
+  { kind: "section", label: "Knowledge & Truth" },
+  { kind: "link", to: "/knowledge",  label: "Knowledge",     icon: <IconBook /> },
+  { kind: "link", to: "/findings",   label: "Findings",      icon: <IconAlertTriangle /> },
+  { kind: "link", to: "/processes",  label: "Processes",     icon: <IconFlow /> },
+  { kind: "link", to: "/approvals",  label: "Approval gate", icon: <IconShieldCheck />, badge: "approvals" },
+  { kind: "link", to: "/providers",  label: "LLM Providers", icon: <IconCpu /> },
+  { kind: "section", label: "Operations" },
+  { kind: "link", to: "/catalog",         label: "Catalog",         icon: <IconLayoutGrid /> },
+  { kind: "link", to: "/skills",          label: "Skills",          icon: <IconZap /> },
+  { kind: "link", to: "/skills/proposed", label: "Proposed skills", icon: <IconStar />, badge: "proposed" },
+  { kind: "link", to: "/connectors",      label: "Connectors",      icon: <IconPlug /> },
+  { kind: "link", to: "/schedules",       label: "Schedules",       icon: <IconClock /> },
+  { kind: "link", to: "/audit",           label: "Audit",           icon: <IconList /> },
+  { kind: "link", to: "/tokens",          label: "API Tokens",      icon: <IconKey /> },
+  { kind: "link", to: "/trust-ladder",   label: "Trust Ladder",    icon: <IconShieldCheck /> },
 ];
 
+function NavBadge({ count }: { count: number }) {
+  if (count === 0) return null;
+  return (
+    <span className="ml-auto flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-600/80 px-1 text-[10px] font-semibold text-white">
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
 export function Layout() {
+  const pendingApprovals = useQuery({
+    queryKey: ["actions", "pending"],
+    queryFn: () => api.listActions("awaiting_approval"),
+    refetchInterval: 15_000,
+    select: (d) => d.length,
+  });
+  const pendingProposed = useQuery({
+    queryKey: ["proposed-count"],
+    queryFn: () => api.listProposed(1, 1),
+    refetchInterval: 30_000,
+    select: (d) => d.total,
+  });
+
+  const badgeCount = (badge?: "approvals" | "proposed"): number => {
+    if (badge === "approvals") return pendingApprovals.data ?? 0;
+    if (badge === "proposed") return pendingProposed.data ?? 0;
+    return 0;
+  };
+
   return (
     <div className="flex h-screen">
-      <aside className="flex w-56 flex-col border-r border-edge bg-panel p-4">
-        <div className="mb-6">
-          <div className="text-lg font-semibold">OpsForge</div>
-          <div className="text-xs text-muted">AI SRE</div>
+      <aside className="flex w-56 flex-col border-r border-edge bg-panel">
+        {/* Brand */}
+        <div className="flex items-center gap-3 border-b border-edge/60 px-4 py-4">
+          <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0">
+            <rect width="32" height="32" rx="8" fill="url(#nav-grad)" />
+            <path d="M9 16h14M16 9v14" stroke="#e6edf3" strokeWidth="1.8" strokeLinecap="round" />
+            <path d="M11.5 11.5l9 9M20.5 11.5l-9 9" stroke="#7dd3fc" strokeWidth="1.2" strokeLinecap="round" strokeOpacity="0.5" />
+            <defs>
+              <linearGradient id="nav-grad" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+                <stop stopColor="#0f2444" />
+                <stop offset="1" stopColor="#0a1e33" />
+              </linearGradient>
+            </defs>
+          </svg>
+          <div>
+            <div className="text-sm font-semibold leading-tight">OpsForge</div>
+            <div className="text-[10px] text-muted leading-tight">AI SRE</div>
+          </div>
         </div>
-        <nav className="flex flex-col gap-1">
-          {NAV.map((n, i) =>
-            n.section ? (
-              <div key={`s${i}`} className="mt-3 px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-600">
-                {n.section}
-              </div>
-            ) : (
+
+        {/* Nav */}
+        <nav className="flex flex-col gap-0.5 overflow-y-auto px-2 py-2 flex-1">
+          {NAV.map((n, i) => {
+            if (n.kind === "section") {
+              return (
+                <div
+                  key={`s${i}`}
+                  className="mt-3 mb-0.5 px-2 pb-0.5 text-[10px] font-semibold uppercase tracking-widest text-zinc-600"
+                >
+                  {n.label}
+                </div>
+              );
+            }
+            const count = badgeCount(n.badge);
+            return (
               <NavLink
                 key={n.to}
-                to={n.to!}
+                to={n.to}
                 end={n.end}
                 className={({ isActive }) =>
-                  `rounded-md px-3 py-2 text-sm ${
-                    isActive ? "bg-edge text-white" : "text-muted hover:bg-edge/40"
+                  `flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors ${
+                    isActive
+                      ? "bg-edge text-white"
+                      : "text-muted hover:bg-edge/40 hover:text-zinc-200"
                   }`
                 }
               >
-                {n.label}
+                <span className="opacity-70">{n.icon}</span>
+                <span className="flex-1">{n.label}</span>
+                {count > 0 && <NavBadge count={count} />}
               </NavLink>
-            ),
-          )}
+            );
+          })}
         </nav>
-        <div className="mt-auto space-y-2">
-          <div className="rounded-md border border-edge px-3 py-2 text-xs text-muted">
-            Press <kbd className="text-sky-400">⌘K</kbd> to dispatch
+
+        {/* Footer */}
+        <div className="border-t border-edge/60 p-3 space-y-2">
+          <div className="flex items-center gap-2 rounded-md border border-edge/60 bg-ink/60 px-2.5 py-1.5 text-xs text-muted">
+            <IconActivity size={12} className="opacity-60" />
+            <span>Press <kbd className="rounded bg-edge px-1 text-sky-400">⌘K</kbd> to dispatch</span>
           </div>
           <button
-            className="btn w-full"
+            className="btn w-full text-xs"
             onClick={() => {
               clearToken();
               location.reload();
@@ -85,6 +156,8 @@ export function Layout() {
         <Routes>
           <Route path="/" element={<MissionControl />} />
           <Route path="/runs/:id" element={<RunDetail />} />
+          <Route path="/runs/:id/timeline" element={<RunTimeline />} />
+          <Route path="/trust-ladder" element={<TrustLadder />} />
           <Route path="/knowledge" element={<Knowledge />} />
           <Route path="/findings" element={<Findings />} />
           <Route path="/processes" element={<Processes />} />

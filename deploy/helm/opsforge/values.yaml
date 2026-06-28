@@ -9,6 +9,11 @@ image:
 # In production, set this via --set-string or a pre-created Secret, not in values.
 fernetKey: ""
 
+# HMAC secret for API token hashing. Required in production.
+# Generate: python -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+# Rotate independently of fernetKey; requires full (non-rolling) restart + token re-issue.
+tokenHmacSecret: ""
+
 # Optional secrets (empty disables the feature).
 webhookSecret: ""
 slackBotToken: ""
@@ -31,12 +36,21 @@ worker:
 postgres:
   enabled: true
   image: pgvector/pgvector:pg16
+  # Superuser — used only by the migrate Job (alembic upgrade head).
   user: opsforge
   password: opsforge
   database: opsforge
   storage: 10Gi
+  # Restricted app role — used by api and worker (NOSUPERUSER NOBYPASSRLS).
+  # Migration 0009 creates this role. Must match OPSFORGE_APP_PASSWORD in the migration.
+  appUser: opsforge_app
+  appPassword: opsforge_app
 
+# Override DATABASE_URL for external managed Postgres (migrate + admin operations).
 externalDatabaseUrl: ""
+# Override app-role URL for external managed Postgres (api + worker).
+# If empty, derived from postgres.appUser/appPassword/database above.
+externalAppDatabaseUrl: ""
 
 resources: {}
 nodeSelector: {}

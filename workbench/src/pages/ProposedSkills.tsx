@@ -109,8 +109,7 @@ function ProposedSkillCard({ skill, onDone }: { skill: ProposedSkill; onDone: ()
           />
           <div className="flex gap-2">
             <button
-              className="btn"
-              style={{ borderColor: reviewing === "approve" ? "#15803d" : "#9f1239" }}
+              className={reviewing === "approve" ? "btn-primary" : "btn-danger"}
               disabled={isPending}
               onClick={confirmReview}
             >
@@ -126,16 +125,14 @@ function ProposedSkillCard({ skill, onDone }: { skill: ProposedSkill; onDone: ()
       ) : (
         <div className="flex gap-2 pt-1">
           <button
-            className="btn"
-            style={{ borderColor: "#15803d" }}
+            className="btn-primary"
             disabled={isPending}
             onClick={() => openReview("approve")}
           >
             Approve & enable
           </button>
           <button
-            className="btn"
-            style={{ borderColor: "#9f1239" }}
+            className="btn-danger"
             disabled={isPending}
             onClick={() => openReview("reject")}
           >

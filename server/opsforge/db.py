@@ -133,7 +133,7 @@ async def scope_to_org(session: AsyncSession, org_id: Any) -> None:
 
 
 _CHECK_ROLE_SQL = text(
-    "SELECT rolsuper OR rolbypassrls AS bypasses_rls "
+    "SELECT rolsuper OR rolbypassrls AS bypasses_rls, current_user AS role "
     "FROM pg_roles WHERE rolname = current_user"
 )
 
@@ -146,17 +146,14 @@ async def assert_restricted_role() -> None:
     NOSUPERUSER NOBYPASSRLS. Call once at process startup.
     """
     async with engine().connect() as conn:
-        bypasses = (await conn.execute(_CHECK_ROLE_SQL)).scalar_one()
-    if bypasses:
+        row = (await conn.execute(_CHECK_ROLE_SQL)).mappings().one()
+    if row["bypasses_rls"]:
         msg = (
             "DB role '%s' can bypass RLS (SUPERUSER or BYPASSRLS) — "
             "org isolation is NOT enforced. Connect as opsforge_app "
             "(NOSUPERUSER NOBYPASSRLS). Run migration 0009 to create the role."
         )
-        # current_user is already captured in the query result comment; fetch it
-        # for the log message.
-        async with engine().connect() as conn:
-            role = (await conn.execute(text("SELECT current_user"))).scalar_one()
+        role = row["role"]
         if get_settings().environment == "dev":
             _log.warning(msg, role)
         else:
