@@ -49,7 +49,7 @@ async def _insert_run_and_event(org_id: str, event_payload: dict) -> uuid.UUID:
     return run_id
 
 
-async def test_timeline_strips_scope_for_delegation_callers(auth_headers: dict):
+async def test_timeline_strips_scope_for_delegation_callers():
     """Delegation callers must not see 'scope' in timeline event payloads."""
     from datetime import UTC, datetime, timedelta
 

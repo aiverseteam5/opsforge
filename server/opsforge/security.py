@@ -10,9 +10,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 from datetime import UTC, datetime
+
+_log = logging.getLogger("opsforge.security")
 from typing import Any
 
 import jwt as _jwt
@@ -188,16 +191,26 @@ async def _verify_delegation_jwt(jwt_str: str, session: AsyncSession) -> Princip
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid delegation token"
         ) from None
+    except Exception:
+        _log.exception("Unexpected error verifying delegation token")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Token verification error — check server logs",
+        ) from None
 
     # Check that this jti has been issued, not revoked, and not expired at DB level.
+    # Explicit org_id predicate is defense-in-depth: RLS GUC already scopes the
+    # session, but a connection-pool GUC reset edge case would otherwise allow
+    # cross-org jti matches. Both guards must pass.
     await scope_to_org(session, org_id)
     row = (
         await session.execute(
             text(
                 "SELECT 1 FROM delegation_tokens "
-                "WHERE jti = :jti AND revoked_at IS NULL AND expires_at > now()"
+                "WHERE jti = :jti AND org_id = :org_id "
+                "AND revoked_at IS NULL AND expires_at > now()"
             ),
-            {"jti": claims["jti"]},
+            {"jti": claims["jti"], "org_id": org_id},
         )
     ).first()
     if row is None:
@@ -253,7 +266,9 @@ async def require_token(
         )
         if expires < datetime.now(UTC):
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token expired",
+                headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
             )
     # Best-effort touch; never block auth on it.
     await session.execute(_TOUCH_TOKEN_SQL, {"token_hash": token_hash})

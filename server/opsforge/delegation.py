@@ -38,7 +38,15 @@ def _signing_key() -> bytes:
     global _key_fallback_warned
     s = get_settings()
     if s.delegation_signing_key:
-        return base64.urlsafe_b64decode(s.delegation_signing_key)
+        key = base64.urlsafe_b64decode(s.delegation_signing_key)
+        if len(key) < 32:
+            raise RuntimeError(
+                f"OPSFORGE_DELEGATION_SIGNING_KEY is too short ({len(key)} bytes); "
+                "minimum 32 bytes required to resist brute-force. "
+                "Regenerate with: python -c \"import os,base64; "
+                "print(base64.urlsafe_b64encode(os.urandom(32)).decode())\""
+            )
+        return key
     if s.token_hmac_secret:
         if s.environment != "dev" and not _key_fallback_warned:
             _log.warning(
@@ -47,7 +55,13 @@ def _signing_key() -> bytes:
                 "Set OPSFORGE_DELEGATION_SIGNING_KEY to decouple key rotation."
             )
             _key_fallback_warned = True
-        return base64.urlsafe_b64decode(s.token_hmac_secret)
+        key = base64.urlsafe_b64decode(s.token_hmac_secret)
+        if len(key) < 32:
+            raise RuntimeError(
+                f"OPSFORGE_TOKEN_HMAC_SECRET is too short ({len(key)} bytes); "
+                "minimum 32 bytes required to resist brute-force."
+            )
+        return key
     if s.environment != "dev":
         raise RuntimeError(
             "OPSFORGE_DELEGATION_SIGNING_KEY must be set in non-dev environments. "

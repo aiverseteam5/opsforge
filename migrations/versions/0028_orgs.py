@@ -68,6 +68,7 @@ def upgrade() -> None:
             UNION ALL SELECT org_id FROM delegation_tokens
             UNION ALL SELECT org_id FROM jit_credentials
         ) sub
+        WHERE org_id IS NOT NULL
         ON CONFLICT DO NOTHING;
     """)
 

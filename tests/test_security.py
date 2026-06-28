@@ -524,25 +524,29 @@ def test_delegation_uses_dedicated_signing_key():
 
 def test_delegation_fallback_to_hmac_secret_when_no_delegation_key():
     """When OPSFORGE_DELEGATION_SIGNING_KEY is unset, falls back to OPSFORGE_TOKEN_HMAC_SECRET."""
+    from opsforge import delegation as _d
+
     run_id, sub_run_id, org_id = _make_ids()
-    with _HmacSecret():
-        # Ensure delegation key is cleared for this test.
-        os.environ.pop("OPSFORGE_DELEGATION_SIGNING_KEY", None)
-        from opsforge import delegation as _d
+    _d._key_fallback_warned = False
+    try:
+        with _HmacSecret():
+            # Ensure delegation key is cleared for this test.
+            os.environ.pop("OPSFORGE_DELEGATION_SIGNING_KEY", None)
+            get_settings.cache_clear()
+            token, _ = mint_delegation_token(
+                run_id=run_id, sub_run_id=sub_run_id, org_id=org_id, scope=["x.y"]
+            )
+            claims = verify_delegation_token(token, org_id)
+        assert claims["org_id"] == org_id
+    finally:
         _d._key_fallback_warned = False
-        get_settings.cache_clear()
-        token, _ = mint_delegation_token(
-            run_id=run_id, sub_run_id=sub_run_id, org_id=org_id, scope=["x.y"]
-        )
-        claims = verify_delegation_token(token, org_id)
-    assert claims["org_id"] == org_id
 
 
 def test_delegation_token_with_new_key_fails_under_old_hmac_key():
     """Tokens minted with OPSFORGE_DELEGATION_SIGNING_KEY fail to verify with the fallback key."""
     run_id, sub_run_id, org_id = _make_ids()
 
-    with _DelegationKey() as new_key_ctx:
+    with _DelegationKey():
         token, _ = mint_delegation_token(
             run_id=run_id, sub_run_id=sub_run_id, org_id=org_id, scope=["x.y"]
         )
