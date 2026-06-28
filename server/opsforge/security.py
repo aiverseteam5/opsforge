@@ -236,7 +236,14 @@ async def require_token(
     ).first()
     if row is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={
+                "WWW-Authenticate": (
+                    'Bearer error="invalid_token", '
+                    'error_description="Token requires re-issuance — generate a new API token"'
+                )
+            },
         )
     if row.expires_at is not None:
         expires = (

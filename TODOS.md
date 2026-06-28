@@ -9,12 +9,6 @@ Items are added here instead of blocking the ship; they become the first candida
 
 ### Security
 
-- **HMAC/JWT key coupling** (adversarial, MEDIUM): `_signing_key()` in `delegation.py` uses `OPSFORGE_TOKEN_HMAC_SECRET` for both HMAC token hashing and JWT delegation signing. These should be independent secrets so rotating one does not invalidate the other. Deferred: Phase 5 introduces a dedicated `OPSFORGE_DELEGATION_SIGNING_KEY` env var.
-
-- **Unredacted runbook content in `jobs.payload`** (adversarial, LOW): `codify_from_url` stores the full runbook text in `jobs.payload`. If the runbook contains secrets (e.g., embedded tokens in procedural docs), those end up in the DB unredacted. Deferred: add a `redact()` pass on the runbook text before inserting into `jobs.payload`.
-
-- **`/runs/{id}/timeline` delegation scope exposure** (adversarial, LOW): The `timeline` endpoint returns raw `payload` from `run_events`, which may include delegation scope lists (`scope: ["tool_a", "tool_b"]`). For delegation callers, the scope should be stripped from the timeline response. Deferred: add `principal.scope` filter on payload before returning.
-
 - **PinnedTransport HTTPS redesign** (pre-landing, MEDIUM): `_PinnedTransport` in `skills.py` rewrites the URL host to the resolved IP but keeps the `Host` header as the original hostname. This works for most HTTPS servers (SNI uses the `Host` header) but breaks for servers that validate the IP-based URL via TLS certificate CN/SAN. Proper fix: use `httpx.HTTPTransport` with a custom resolver that pins the IP at the socket level (not URL rewrite). Deferred: requires httpx internals change; document known limitation in SSRF guard docstring.
 
 ### Observability
@@ -27,13 +21,23 @@ Items are added here instead of blocking the ship; they become the first candida
 
 - **`@lru_cache` + multi-worker deployment note** (pre-landing): `get_settings()` is cached per process. In multi-worker deployments (e.g., `uvicorn --workers 4`), a secret rotation requires a full restart (not SIGHUP) of all workers simultaneously. Add note to Helm chart `values.yaml` and `deploy/README.md`.
 
-### Phase 5 Prerequisites
+---
 
-- **`token_version` migration incompatibility** (pre-landing, deferred): Adding `token_version` column invalidates all pre-existing tokens (no backward-compat bridge for SHA-256 → HMAC upgrade). Phase 5 should provide an opt-in migration window (grace period where both hash schemes are accepted) before hard cutover.
+## Phase 5b Candidates
 
-- **Phase 4.3 — Multi-org control plane** (eng-review, deferred): Requires `orgs` table, backfill migration, and ancestor-chain RLS design (`org_ancestors` join table). Design doc required before Phase 5 kickoff.
+- **E1 — AI Postmortem Generation** (CEO review, deferred): Requires production incident data to validate LLM output quality. Phase 5b candidate after real-world incident patterns accumulate.
 
-- **E1 — AI Postmortem Generation** (CEO review, deferred): Requires production incident data to validate LLM output quality. Phase 5 candidate after real-world incident patterns accumulate.
+- **Multi-org hierarchy activation**: `org_ancestors` table and `org_ancestors` RLS policy (schema landed in Phase 5a; policies and control plane API deferred to Phase 5b when real parent→child org use case arrives).
+
+---
+
+## Resolved in Phase 5a (removed)
+
+The following items were resolved and removed on 2026-06-28:
+- HMAC/JWT key coupling → shipped `OPSFORGE_DELEGATION_SIGNING_KEY` with fallback
+- Unredacted runbook content in `jobs.payload` → shipped `redact(text_content)` in `codify_from_url`
+- `/runs/{id}/timeline` delegation scope exposure → shipped `scope` strip for delegation callers
+- `token_version` migration incompatibility → rejected lazy migration (migration 0024 security decision stands); shipped improved 401 `WWW-Authenticate` header
 
 ---
 
@@ -44,4 +48,4 @@ Each item links to its origin review. When picking up a deferred item:
 2. Remove the item from this file once the issue is open
 3. Ship fixes on a dedicated branch, not on the main feature branch
 
-Last updated: 2026-06-28 (Phase 4 ship)
+Last updated: 2026-06-28 (Phase 5a: multi-org + security hardening)

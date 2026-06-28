@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     # urlsafe-base64 32-byte key for HMAC-SHA256 API token hashing.
     # Decoupled from fernet_key so vault creds and token hashes rotate independently.
     token_hmac_secret: str = Field(default="")
+    # urlsafe-base64 32-byte key for JWT delegation token signing (HS256).
+    # Decoupled from token_hmac_secret so rotating API token hashing does not
+    # invalidate in-flight delegation tokens (and vice versa). When unset,
+    # delegation.py falls back to token_hmac_secret with a startup WARNING.
+    delegation_signing_key: str = Field(default="")
 
     org_id: str = DEFAULT_ORG_ID
 

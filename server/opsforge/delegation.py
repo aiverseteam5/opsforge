@@ -2,16 +2,20 @@
 
 Delegation tokens are short-lived JWTs (max 15 min) issued by a run to
 authorize a sub-agent to act on its behalf within a bounded tool scope.
-They are signed with OPSFORGE_TOKEN_HMAC_SECRET (HS256). In dev, a fixed
-fallback key is used when the secret is not configured.
+They are signed with OPSFORGE_DELEGATION_SIGNING_KEY (HS256). When that key
+is not set, the code falls back to OPSFORGE_TOKEN_HMAC_SECRET and logs a
+WARNING in non-dev environments — set the dedicated key to decouple rotation.
 
-The caller is responsible for inserting the jti into delegation_tokens before
-returning the token to the caller (so revocation is always possible).
+Deployment note: when OPSFORGE_DELEGATION_SIGNING_KEY is first set, tokens
+minted under the old key fail for up to 15 minutes (the max delegation token
+TTL). Schedule the key rotation during low-traffic or drain active delegation
+tokens first.
 """
 
 from __future__ import annotations
 
 import base64
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -19,22 +23,38 @@ import jwt
 
 from .config import get_settings
 
+_log = logging.getLogger("opsforge.delegation")
+
 _MAX_EXP_SECONDS = 900  # 15-minute hard cap
 
 _DEV_KEY = b"dev-delegation-key-not-for-production-use"
 
+# Module-level flag: emit the fallback WARNING at most once per process to
+# avoid log spam on every token mint/verify call.
+_key_fallback_warned = False
+
 
 def _signing_key() -> bytes:
-    secret = get_settings().token_hmac_secret
-    if not secret:
-        if get_settings().environment != "dev":
-            raise RuntimeError(
-                "OPSFORGE_TOKEN_HMAC_SECRET must be set in non-dev environments. "
-                "Generate with: python -c \"import os,base64; "
-                "print(base64.urlsafe_b64encode(os.urandom(32)).decode())\""
+    global _key_fallback_warned
+    s = get_settings()
+    if s.delegation_signing_key:
+        return base64.urlsafe_b64decode(s.delegation_signing_key)
+    if s.token_hmac_secret:
+        if s.environment != "dev" and not _key_fallback_warned:
+            _log.warning(
+                "OPSFORGE_DELEGATION_SIGNING_KEY not set — falling back to "
+                "OPSFORGE_TOKEN_HMAC_SECRET for delegation token signing. "
+                "Set OPSFORGE_DELEGATION_SIGNING_KEY to decouple key rotation."
             )
-        return _DEV_KEY
-    return base64.urlsafe_b64decode(secret)
+            _key_fallback_warned = True
+        return base64.urlsafe_b64decode(s.token_hmac_secret)
+    if s.environment != "dev":
+        raise RuntimeError(
+            "OPSFORGE_DELEGATION_SIGNING_KEY must be set in non-dev environments. "
+            "Generate with: python -c \"import os,base64; "
+            "print(base64.urlsafe_b64encode(os.urandom(32)).decode())\""
+        )
+    return _DEV_KEY
 
 
 def mint_delegation_token(

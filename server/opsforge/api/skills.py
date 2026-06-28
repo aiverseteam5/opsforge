@@ -20,7 +20,7 @@ from sqlalchemy import text
 
 from ..config import get_settings
 from ..db import record_audit, scope_to_org, session_factory
-from ..security import Principal, require_token
+from ..security import Principal, redact, require_token
 from ..skills import (
     SkillValidationError,
     get_skill,
@@ -360,7 +360,9 @@ async def codify_from_url(
                 {
                     "org": principal.org_id,
                     "payload": json.dumps(
-                        {"url": body.url, "content": text_content, "org_id": principal.org_id}
+                        # redact() is best-effort pattern matching — catches inline
+                    # key=value secrets but not all embedded credential formats.
+                    {"url": body.url, "content": redact(text_content), "org_id": principal.org_id}
                     ),
                 },
             )

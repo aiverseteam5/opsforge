@@ -309,3 +309,43 @@ def test_trust_ladder_eligibility_logic():
     # Edge: exactly at threshold, zero rollbacks
     assert eligible("reversible", 10, 0) is True
     assert eligible("reversible", 11, 0) is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 5a: runbook redaction in codify_from_url (T9)
+# ---------------------------------------------------------------------------
+
+
+def test_codify_from_url_redacts_inline_secrets():
+    """jobs.payload content must not contain inline secrets from the runbook text."""
+    from opsforge.security import redact
+
+    runbook_text = (
+        "Step 1: authenticate\n"
+        "  token=abc123secret\n"
+        "  password=hunter2\n"
+        "Step 2: run the deploy script\n"
+        "  api_key=xyzXYZ999\n"
+        "Done."
+    )
+    redacted = redact(runbook_text)
+
+    assert "hunter2" not in redacted
+    assert "abc123secret" not in redacted
+    assert "xyzXYZ999" not in redacted
+    # Non-secret content must be preserved
+    assert "Step 1" in redacted
+    assert "Step 2" in redacted
+    assert "Done." in redacted
+
+
+def test_codify_from_url_preserves_non_secret_content():
+    """redact() on a runbook with no secrets passes it through unchanged."""
+    from opsforge.security import redact
+
+    clean_runbook = (
+        "Step 1: check service health\n"
+        "Step 2: restart the pod\n"
+        "Step 3: verify logs show 'ready'\n"
+    )
+    assert redact(clean_runbook) == clean_runbook

@@ -231,6 +231,10 @@ async def get_run_timeline(
     next_seq = after_seq
     for r in rows:
         payload = r.payload or {}
+        # Delegation callers must not receive scope lists stored in event payloads —
+        # those belong to the issuing run's trust context, not the caller's view.
+        if principal.scope is not None:
+            payload = {k: v for k, v in payload.items() if k != "scope"}
         actor = "human" if r.kind in ("proposal",) else "agent"
         summary = (
             payload.get("summary")

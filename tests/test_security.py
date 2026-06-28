@@ -446,3 +446,110 @@ def test_scope_check_fires_before_manifest_check():
     assert "scope_not_permitted" in trace["rules"]
     # Must NOT say "tool_not_in_manifest" — scope gate fired first.
     assert "tool_not_in_manifest" not in trace["rules"]
+
+
+# --------------------------------------------------------------------------- #
+# Phase 5a: 401 WWW-Authenticate header for invalid tokens (T6)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.usefixtures("db_required")
+async def test_invalid_token_returns_www_authenticate_header():
+    """401 for a bad API token includes a WWW-Authenticate header with error_description."""
+    from httpx import ASGITransport, AsyncClient
+
+    from opsforge.main import app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/v1/runs",
+            headers={"Authorization": "Bearer ofg_nosuchatoken_abc123"},
+        )
+
+    assert resp.status_code == 401
+    www_auth = resp.headers.get("www-authenticate", "")
+    assert "error_description" in www_auth
+    assert "re-issuance" in www_auth
+
+
+# --------------------------------------------------------------------------- #
+# Phase 5a: delegation key decoupling (T8)
+# --------------------------------------------------------------------------- #
+
+
+class _DelegationKey:
+    """Context manager: temporarily set OPSFORGE_DELEGATION_SIGNING_KEY."""
+
+    def __init__(self, key_bytes: bytes | None = None):
+        import base64
+        self._key = key_bytes or os.urandom(32)
+        self._secret = base64.urlsafe_b64encode(self._key).decode()
+        self._orig: str | None = None
+
+    @property
+    def key(self) -> bytes:
+        return self._key
+
+    def __enter__(self) -> "_DelegationKey":
+        from opsforge import delegation as _d
+        self._orig = os.environ.get("OPSFORGE_DELEGATION_SIGNING_KEY")
+        os.environ["OPSFORGE_DELEGATION_SIGNING_KEY"] = self._secret
+        get_settings.cache_clear()
+        _d._key_fallback_warned = False
+        return self
+
+    def __exit__(self, *_):
+        from opsforge import delegation as _d
+        if self._orig is None:
+            os.environ.pop("OPSFORGE_DELEGATION_SIGNING_KEY", None)
+        else:
+            os.environ["OPSFORGE_DELEGATION_SIGNING_KEY"] = self._orig
+        get_settings.cache_clear()
+        _d._key_fallback_warned = False
+
+
+def test_delegation_uses_dedicated_signing_key():
+    """When OPSFORGE_DELEGATION_SIGNING_KEY is set, tokens are signed with that key."""
+    run_id, sub_run_id, org_id = _make_ids()
+    with _DelegationKey():
+        token, _ = mint_delegation_token(
+            run_id=run_id, sub_run_id=sub_run_id, org_id=org_id, scope=["x.y"]
+        )
+        # Must verify with the same key in context.
+        claims = verify_delegation_token(token, org_id)
+    assert claims["org_id"] == org_id
+
+
+def test_delegation_fallback_to_hmac_secret_when_no_delegation_key():
+    """When OPSFORGE_DELEGATION_SIGNING_KEY is unset, falls back to OPSFORGE_TOKEN_HMAC_SECRET."""
+    run_id, sub_run_id, org_id = _make_ids()
+    with _HmacSecret():
+        # Ensure delegation key is cleared for this test.
+        os.environ.pop("OPSFORGE_DELEGATION_SIGNING_KEY", None)
+        from opsforge import delegation as _d
+        _d._key_fallback_warned = False
+        get_settings.cache_clear()
+        token, _ = mint_delegation_token(
+            run_id=run_id, sub_run_id=sub_run_id, org_id=org_id, scope=["x.y"]
+        )
+        claims = verify_delegation_token(token, org_id)
+    assert claims["org_id"] == org_id
+
+
+def test_delegation_token_with_new_key_fails_under_old_hmac_key():
+    """Tokens minted with OPSFORGE_DELEGATION_SIGNING_KEY fail to verify with the fallback key."""
+    run_id, sub_run_id, org_id = _make_ids()
+
+    with _DelegationKey() as new_key_ctx:
+        token, _ = mint_delegation_token(
+            run_id=run_id, sub_run_id=sub_run_id, org_id=org_id, scope=["x.y"]
+        )
+
+    # Token was minted with new_key. Now verify under the fallback path (token_hmac_secret).
+    os.environ.pop("OPSFORGE_DELEGATION_SIGNING_KEY", None)
+    get_settings.cache_clear()
+    with _HmacSecret():
+        with pytest.raises(jwt.PyJWTError):
+            verify_delegation_token(token, org_id)
