@@ -160,6 +160,83 @@ async def list_chunks(
     return [r.model_dump(mode="json") for r in rows]
 
 
+class SetupBody(BaseModel):
+    """C6 — Process discovery setup: orchestrate all ingestion jobs in one call.
+
+    Accepts a mix of local paths and connector IDs. All jobs are enqueued and
+    a job manifest is returned so the caller can poll status.
+    """
+    paths: list[str] = []
+    connector_ids: list[str] = []
+    slack_connector_id: str | None = None
+    slack_channel_id: str | None = None
+    process_key: str | None = None
+
+
+@router.post("/knowledge/setup", status_code=202)
+async def setup_ingest(
+    body: SetupBody,
+    principal: Principal = Depends(require_token),
+):
+    """Orchestrate process discovery: ingest docs + tickets + Slack history in parallel.
+
+    All jobs are enqueued atomically and return immediately (202). Poll
+    GET /jobs/{id} for each job_id to track progress.
+    """
+    _require_writer(principal)
+    jobs: list[dict] = []
+
+    async with session_factory().begin() as s:
+        for path in body.paths:
+            jid = await enqueue(
+                s,
+                kind="ingest",
+                payload={"org_id": principal.org_id, "path": path},
+                org_id=principal.org_id,
+            )
+            jobs.append({"job_id": str(jid), "kind": "ingest", "path": path})
+
+        for connector_id in body.connector_ids:
+            jid = await enqueue(
+                s,
+                kind="ingest_knowledge",
+                payload={
+                    "org_id": principal.org_id,
+                    "connector_id": connector_id,
+                    "process_key": body.process_key,
+                },
+                org_id=principal.org_id,
+            )
+            jobs.append({"job_id": str(jid), "kind": "ingest_knowledge", "connector_id": connector_id})
+
+            jid2 = await enqueue(
+                s,
+                kind="ingest_tickets",
+                payload={"org_id": principal.org_id, "connector_id": connector_id},
+                org_id=principal.org_id,
+            )
+            jobs.append({"job_id": str(jid2), "kind": "ingest_tickets", "connector_id": connector_id})
+
+        if body.slack_channel_id:
+            jid = await enqueue(
+                s,
+                kind="ingest_slack_history",
+                payload={
+                    "org_id": principal.org_id,
+                    "channel_id": body.slack_channel_id,
+                    "process_key": body.process_key or "slack_incidents",
+                },
+                org_id=principal.org_id,
+            )
+            jobs.append({
+                "job_id": str(jid),
+                "kind": "ingest_slack_history",
+                "channel_id": body.slack_channel_id,
+            })
+
+    return {"jobs": jobs, "total": len(jobs)}
+
+
 @router.get("/jobs/{job_id}")
 async def job_status(job_id: UUID, principal: Principal = Depends(require_token)):
     """Status of an ingest/reconcile job (queued | running | done | failed) so a

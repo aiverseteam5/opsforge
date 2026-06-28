@@ -169,6 +169,40 @@ export interface TrustLadder {
   graduation_threshold: number;
 }
 
+// C1: Conversation thread (chat-first interface).
+export interface Conversation {
+  id: string;
+  org_id: string;
+  title: string;
+  created_at: string;
+  created_by: string | null;
+}
+
+// C1: Message within a conversation.
+export interface Message {
+  id: string;
+  conversation_id: string;
+  org_id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  run_id: string | null;
+  seq: number;
+  created_at: string;
+}
+
+// C2: Parsed assistant message payload (JSON-encoded in content).
+export type AssistantPayload =
+  | { type: "run_dispatched"; run_id: string; status: string }
+  | { type: "ambiguous"; candidates: { slug: string; name: string }[] }
+  | { type: "error"; detail: string };
+
+// C4/E1: Postmortem job response.
+export interface PostmortemJob {
+  job_id: string;
+  run_id: string;
+  status: string;
+}
+
 // Phase 3: codified skill awaiting human review before activation.
 export interface ProposedSkill {
   id: string;
@@ -332,6 +366,35 @@ export const api = {
   }) =>
     req<{ id: string; residency: string; residency_warning: string | null }>(
       "/llm/providers", { method: "POST", body: JSON.stringify(body) }),
+  // ---- C1+C2: Conversations (chat-first interface) ----
+  listConversations: () => req<Conversation[]>("/conversations"),
+  createConversation: (title?: string) =>
+    req<Conversation>("/conversations", {
+      method: "POST",
+      body: JSON.stringify({ title: title || "New conversation" }),
+    }),
+  getConversation: (id: string) => req<Conversation>(`/conversations/${id}`),
+  listMessages: (conversationId: string) =>
+    req<Message[]>(`/conversations/${conversationId}/messages`),
+  sendMessage: (conversationId: string, content: string) =>
+    req<{
+      user_message: Message;
+      assistant_message: Message;
+      run_id: string | null;
+      dispatch_status: string;
+      candidates: { slug: string; name: string }[] | null;
+    }>(`/conversations/${conversationId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    }),
+
+  // ---- C4/E1: AI Postmortem ----
+  requestPostmortem: (runId: string, channel?: string) =>
+    req<PostmortemJob>(`/runs/${runId}/postmortem`, {
+      method: "POST",
+      body: JSON.stringify({ channel: channel ?? null }),
+    }),
+
   // ---- A1 catalog (read-only) ----
   getCatalog: () => req<{ zones: CatalogZone[] }>("/catalog"),
   getCatalogEntry: (key: string) => req<CatalogDetail>(`/catalog/${encodeURIComponent(key)}`),

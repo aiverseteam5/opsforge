@@ -549,6 +549,307 @@ async def handle_codify_from_url(payload: dict[str, Any]) -> None:
         logger.warning("codify_from_url: slack notify failed for %r", slug, exc_info=True)
 
 
+async def handle_postmortem(payload: dict[str, Any]) -> None:
+    """Generate an AI postmortem for a completed run and store it as a pattern.
+
+    1. Loads the run's events (tool_result, evidence, proposal, report).
+    2. Asks the LLM to produce a structured postmortem (timeline, root cause,
+       action items, confidence).
+    3. Persists the result in the patterns table.
+    4. Optionally posts a Block Kit summary to the Slack on-call channel.
+
+    Idempotent: checks for an existing postmortem pattern before writing.
+    """
+    import json
+
+    from sqlalchemy import text
+
+    from .db import scope_to_org, session_factory
+    from .gateway import LiteLLMGateway
+    from .knowledge import _vector_literal
+    from .security import redact
+
+    run_id = payload.get("run_id")
+    org_id = payload.get("org_id")
+    channel = payload.get("channel")  # optional Slack channel override
+    if not run_id or not org_id:
+        raise ValueError("postmortem job missing run_id or org_id")
+
+    # Load run report and events.
+    async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
+        run_row = (
+            await s.execute(
+                text("SELECT report_md, status FROM runs WHERE id = :id"),
+                {"id": run_id},
+            )
+        ).first()
+        event_rows = (
+            await s.execute(
+                text(
+                    "SELECT kind, payload FROM run_events "
+                    "WHERE run_id = :rid "
+                    "AND kind IN ('tool_result', 'evidence', 'proposal', 'report') "
+                    "ORDER BY seq"
+                ),
+                {"rid": run_id},
+            )
+        ).all()
+
+    if run_row is None:
+        raise ValueError(f"run {run_id} not found")
+
+    # Idempotency: skip if postmortem already exists.
+    async with session_factory().begin() as s:
+        existing = (
+            await s.execute(
+                text(
+                    "SELECT id FROM patterns WHERE org_id = :org "
+                    "AND outcome->>'postmortem_run_id' = :rid"
+                ),
+                {"org": org_id, "rid": run_id},
+            )
+        ).first()
+    if existing:
+        logger.info("postmortem: already exists for run %s, skipping", run_id)
+        return
+
+    transcript_parts = []
+    if run_row.report_md:
+        transcript_parts.append(f"[final_report]\n{run_row.report_md}")
+    for r in event_rows:
+        transcript_parts.append(f"[{r.kind}] {json.dumps(r.payload or {})}")
+    transcript = redact("\n".join(transcript_parts))
+
+    # Keep first 4K + last 20K.
+    _FIRST, _LAST = 4096, 20480
+    if len(transcript) > _FIRST + _LAST:
+        transcript = transcript[:_FIRST] + "\n...[truncated]...\n" + transcript[-_LAST:]
+
+    _POSTMORTEM_TOOL = {
+        "type": "function",
+        "function": {
+            "name": "write_postmortem",
+            "description": "Write a structured postmortem for an SRE incident run.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "timeline": {"type": "string", "description": "Bullet timeline of key events"},
+                    "root_cause": {"type": "string"},
+                    "contributing_factors": {
+                        "type": "array", "items": {"type": "string"},
+                    },
+                    "action_items": {
+                        "type": "array", "items": {"type": "string"},
+                    },
+                    "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+                    "summary_md": {"type": "string", "description": "Full postmortem in markdown"},
+                },
+                "required": ["title", "root_cause", "action_items", "confidence", "summary_md"],
+            },
+        },
+    }
+
+    gateway = LiteLLMGateway()
+    settings = get_settings()
+    result = await gateway.chat(
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are an SRE postmortem author. Analyze this agent run transcript "
+                    "and write a blameless postmortem by calling write_postmortem. "
+                    "Focus on: what happened, why, what prevented earlier detection, "
+                    "and concrete action items to prevent recurrence."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Agent run {run_id} transcript:\n\n{transcript}\n\nWrite the postmortem.",
+            },
+        ],
+        tools=[_POSTMORTEM_TOOL],
+        model=settings.model,
+        tool_choice="required",
+    )
+
+    if not result.tool_calls:
+        logger.warning("postmortem: LLM did not call write_postmortem for run %s", run_id)
+        return
+
+    args = result.tool_calls[0].arguments
+    title = args.get("title", f"Postmortem for run {run_id[:8]}")
+    summary_md = args.get("summary_md", "")
+    root_cause = args.get("root_cause", "")
+    action_items = args.get("action_items", [])
+    confidence = args.get("confidence", "low")
+
+    # Embed the postmortem for future similarity search.
+    embed_text = f"{title}: {root_cause}"
+    embedding: list[float] | None = None
+    try:
+        vecs = await gateway.embedding([embed_text], settings.embedding_model)
+        embedding = vecs[0] if vecs else None
+    except Exception:  # noqa: BLE001
+        logger.warning("postmortem: embedding failed for run %s", run_id, exc_info=True)
+
+    async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
+        await s.execute(
+            text(
+                "INSERT INTO patterns (org_id, run_id, summary, embedding, resolution, outcome) "
+                "VALUES (:org, :rid, :summary, CAST(:emb AS vector), :res, CAST(:outcome AS jsonb))"
+            ),
+            {
+                "org": org_id,
+                "rid": run_id,
+                "summary": embed_text,
+                "emb": _vector_literal(embedding) if embedding else None,
+                "res": root_cause,
+                "outcome": json.dumps({
+                    "type": "postmortem",
+                    "postmortem_run_id": run_id,
+                    "title": title,
+                    "confidence": confidence,
+                    "action_items": action_items,
+                    "summary_md": summary_md,
+                }),
+            },
+        )
+
+    logger.info("postmortem: stored for run %s — %r", run_id, title)
+
+    # Deliver to Slack if a channel is configured (failure must not fail the job).
+    target_channel = channel or settings.skill_review_channel
+    if target_channel:
+        try:
+            from .surfaces.slack import post_message
+
+            blocks = [
+                {"type": "header", "text": {"type": "plain_text", "text": f"Postmortem: {title}"}},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Root cause:* {root_cause}"}},
+            ]
+            if action_items:
+                items_md = "\n".join(f"• {a}" for a in action_items[:5])
+                blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"*Action items:*\n{items_md}"},
+                })
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"Confidence: *{confidence}* | Run: `{run_id}`"}],
+            })
+            await post_message(target_channel, f"Postmortem: {title}", blocks)
+        except Exception:  # noqa: BLE001
+            logger.warning("postmortem: slack delivery failed for run %s", run_id, exc_info=True)
+
+
+async def handle_ingest_slack_history(payload: dict[str, Any]) -> None:
+    """Ingest past Slack incident threads as behaviour knowledge chunks (C7).
+
+    Fetches message history from a Slack channel via the Web API (using the
+    same bot token as the rest of the Slack surface), groups messages into
+    incident threads, and stores them as behaviour chunks in the knowledge store.
+
+    Payload keys:
+      org_id      — organisation UUID (required)
+      channel_id  — Slack channel ID to ingest (required)
+      since_days  — how far back to look (default 180)
+      process_key — knowledge process key to tag chunks under
+    """
+    import time as _time
+    from datetime import UTC, datetime
+
+    import httpx
+
+    from .ingest import configured_embedder
+    from .knowledge import PendingChunk, ProvenanceEnvelope, store_chunks
+    from .security import redact
+
+    org_id = payload.get("org_id")
+    channel_id = payload.get("channel_id")
+    if not org_id or not channel_id:
+        raise ValueError("ingest_slack_history job missing org_id or channel_id")
+
+    settings = get_settings()
+    if not settings.slack_bot_token:
+        logger.warning("ingest_slack_history: no slack_bot_token configured, skipping")
+        return
+
+    since_days = int(payload.get("since_days", 180))
+    process_key = payload.get("process_key", "slack_incidents")
+    embedder = configured_embedder()
+    oldest_ts = str(int(_time.time()) - since_days * 86400)
+    ingested_at = datetime.now(UTC)
+
+    chunks_ingested = 0
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                "https://slack.com/api/conversations.history",
+                headers={"Authorization": f"Bearer {settings.slack_bot_token}"},
+                params={"channel": channel_id, "oldest": oldest_ts, "limit": 200},
+            )
+        data = resp.json()
+        if not data.get("ok"):
+            logger.warning(
+                "ingest_slack_history: Slack API error: %s", data.get("error", "unknown")
+            )
+            return
+
+        messages = data.get("messages", [])
+
+        # Group messages by thread_ts to reconstruct incident threads.
+        threads: dict[str, list[dict]] = {}
+        for msg in messages:
+            ts = msg.get("thread_ts") or msg.get("ts", "")
+            if ts not in threads:
+                threads[ts] = []
+            threads[ts].append(msg)
+
+        # Collect thread texts + refs before embedding.
+        thread_data: list[tuple[str, str]] = []
+        for ts, msgs in threads.items():
+            thread_text = "\n".join(
+                f"[{m.get('ts', '')}] {m.get('text', '')}"
+                for m in sorted(msgs, key=lambda m: m.get("ts", ""))
+            )
+            thread_text = thread_text.strip()
+            if len(thread_text) < 50:
+                continue
+            thread_data.append((redact(thread_text[:8192]), f"slack:{channel_id}:{ts}"))
+
+        if thread_data:
+            texts = [t[0] for t in thread_data]
+            vectors = await embedder(texts)
+            pending: list[PendingChunk] = [
+                PendingChunk(
+                    content=safe_text,
+                    envelope=ProvenanceEnvelope(
+                        source_kind="behaviour",
+                        source_ref=source_ref,
+                        observed_at=ingested_at,
+                        ingested_at=ingested_at,
+                    ),
+                    embedding=vectors[i],
+                    process_key=process_key,
+                )
+                for i, (safe_text, source_ref) in enumerate(thread_data)
+            ]
+            ids = await store_chunks(org_id, pending)
+            chunks_ingested = len(ids)
+
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "ingest_slack_history: partial failure for channel %s", channel_id, exc_info=True
+        )
+
+    logger.info(
+        "ingest_slack_history: ingested %d chunks from channel %s", chunks_ingested, channel_id
+    )
+
+
 # Dispatch table by job.kind.
 HANDLERS: dict[str, Handler] = {
     "noop": handle_noop,
@@ -561,6 +862,8 @@ HANDLERS: dict[str, Handler] = {
     "reconcile": handle_reconcile,
     "codify_skill": handle_codify_skill,
     "codify_from_url": handle_codify_from_url,
+    "postmortem": handle_postmortem,
+    "ingest_slack_history": handle_ingest_slack_history,
 }
 
 
