@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ProcessStep, ValidatedProcess } from "../api";
-import { ConfidenceTag, Empty, ErrorState, Loading, PageHeader } from "../components/ui";
+import { ConfidenceTag, Empty, ErrorState, Loading, PageHeader, useConfirm, useToast } from "../components/ui";
 
 function StepRow({ s }: { s: ProcessStep }) {
   return (
@@ -52,6 +52,8 @@ function Diff({ versions }: { versions: ValidatedProcess[] }) {
 function ProcessDetail({ proc }: { proc: ValidatedProcess }) {
   const qc = useQueryClient();
   const [showDiff, setShowDiff] = useState(false);
+  const { confirm, dialog } = useConfirm();
+  const toast = useToast();
   const versions = useQuery({
     queryKey: ["versions", proc.process_key],
     queryFn: () => api.processVersions(proc.process_key),
@@ -59,21 +61,28 @@ function ProcessDetail({ proc }: { proc: ValidatedProcess }) {
   });
   const signoff = useMutation({
     mutationFn: () => api.signoffProcess(proc.process_key),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["processes"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["processes"] });
+      toast(`Process "${proc.process_key}" signed off`);
+    },
+    onError: (e) => toast(String(e), "error"),
   });
 
   const hasLow = proc.steps.some((s) => s.low_confidence);
-  const onSignoff = () => {
-    // Friction added where the stakes demand it: signing off a process that contains
-    // low-confidence steps requires a deliberate confirmation, not a reflexive click.
+  const onSignoff = async () => {
     if (proc.status !== "draft") return;
-    if (hasLow && !window.confirm(
-      "This process contains LOW-CONFIDENCE steps (weak grounding). Sign off anyway?")) return;
+    if (hasLow) {
+      const ok = await confirm(
+        `This process contains LOW-CONFIDENCE steps (weak grounding).\n\nProcess: ${proc.process_key} v${proc.version}\n\nSign off anyway?`
+      );
+      if (!ok) return;
+    }
     signoff.mutate();
   };
 
   return (
     <div className="card">
+      {dialog}
       <div className="flex items-center justify-between">
         <div>
           <span className="font-medium">{proc.process_key}</span>{" "}
@@ -87,8 +96,7 @@ function ProcessDetail({ proc }: { proc: ValidatedProcess }) {
             {showDiff ? "Hide diff" : "Diff vs prior"}
           </button>
           {proc.status === "draft" && (
-            <button className="btn" style={{ borderColor: "#15803d" }}
-              disabled={signoff.isPending} onClick={onSignoff}>
+            <button className="btn-primary" disabled={signoff.isPending} onClick={onSignoff}>
               {signoff.isPending ? "Signing…" : "Sign off"}
             </button>
           )}
