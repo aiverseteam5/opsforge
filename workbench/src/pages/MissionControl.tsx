@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { api } from "../api";
+import { api, HealthScore } from "../api";
 import { Empty, PageHeader, StatusBadge, fmt, fmtRelative } from "../components/ui";
-import { IconActivity, IconClock, IconZap, IconStar, IconPlug } from "../components/icons";
+import { IconActivity, IconClock, IconZap, IconStar, IconPlug, IconShieldCheck } from "../components/icons";
 
 function StatCard({
   label,
@@ -75,6 +75,43 @@ function ConnectorStatus() {
   );
 }
 
+function HealthWidget() {
+  const health = useQuery({
+    queryKey: ["health-score"],
+    queryFn: api.getHealthScore,
+    refetchInterval: 60_000,
+  });
+
+  const labelColor = (label: HealthScore["label"]) => {
+    switch (label) {
+      case "healthy": return "text-emerald-300";
+      case "degraded": return "text-amber-300";
+      case "critical": return "text-rose-300";
+      default: return "text-zinc-400";
+    }
+  };
+
+  const d = health.data;
+  const score = d?.score != null ? `${Math.round(d.score * 100)}%` : "—";
+  const label = d?.label ?? "—";
+
+  return (
+    <div className="card flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium uppercase tracking-wide text-muted">Health</span>
+        <span className="opacity-40"><IconShieldCheck /></span>
+      </div>
+      <div className={`text-3xl font-semibold tabular-nums ${d ? labelColor(d.label) : "text-zinc-400"}`}>
+        {score}
+      </div>
+      <span className={`text-xs ${d ? labelColor(d.label) : "text-muted"}`}>
+        {label === "insufficient_data" ? "insufficient data" : label}
+      </span>
+      {d?.message && <span className="text-[11px] text-muted leading-tight">{d.message}</span>}
+    </div>
+  );
+}
+
 export function MissionControl() {
   const runs = useQuery({
     queryKey: ["runs"],
@@ -100,8 +137,9 @@ export function MissionControl() {
         sub="Live runs, connectors, and schedules · press ⌘K to dispatch"
       />
 
-      <div className="mb-6 grid grid-cols-4 gap-4">
+      <div className="mb-6 grid grid-cols-5 gap-4">
         <ConnectorStatus />
+        <HealthWidget />
 
         <StatCard
           label="Schedules"

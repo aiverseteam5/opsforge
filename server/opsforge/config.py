@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     slack_signing_secret: str = ""
     # Channel to notify when a codified skill is proposed for review. Empty → no notification.
     skill_review_channel: str = ""
+    # Public HTTPS URL OpsForge is reachable at. Required for Slack slash command delivery
+    # when deployed behind NAT. Example: https://opsforge.example.com
+    public_url: str = ""
 
     # Trust graduation: an admin may grant auto_with_notify to a reversible tool
     # only after this many clean (succeeded) executions of it.

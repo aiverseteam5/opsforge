@@ -54,7 +54,7 @@ RunEventKind = Literal[
 ]
 JobKind = Literal[
     "noop", "run_agent", "graph_sync", "execute_action", "ingest", "reconcile",
-    "ingest_tickets", "ingest_knowledge", "codify_skill",
+    "ingest_tickets", "ingest_knowledge", "codify_skill", "codify_from_url",
 ]
 JobStatus = Literal["queued", "running", "done", "failed"]
 ActionClass = Literal["read_only", "reversible", "destructive"]

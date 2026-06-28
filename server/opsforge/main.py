@@ -19,12 +19,14 @@ from .api import (
     connectors,
     delegation,
     graph,
+    health_score,
     knowledge,
     llm_providers,
     runs,
     schedules,
     skills,
     tokens,
+    trust_ladder,
     webhooks,
 )
 from .db import assert_restricted_role, engine
@@ -78,7 +80,7 @@ def create_app() -> FastAPI:
 
     for module in (
         runs, connectors, skills, schedules, actions, webhooks, graph, audit, knowledge,
-        llm_providers, catalog, tokens, delegation,
+        llm_providers, catalog, tokens, delegation, health_score, trust_ladder,
     ):
         app.include_router(module.router)
     app.include_router(slack_surface.router)

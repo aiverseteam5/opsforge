@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, RcaReport } from "../api";
 import { StreamEvent, streamRunEvents } from "../sse";
@@ -105,7 +105,12 @@ export function RunDetail() {
 
       <div className="grid grid-cols-2 gap-5">
         <div>
-          <h2 className="mb-2 text-sm font-medium text-muted">Investigation timeline</h2>
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-sm font-medium text-muted">Investigation timeline</h2>
+            <Link to={`/runs/${id}/timeline`} className="text-xs text-sky-400 hover:underline">
+              War room →
+            </Link>
+          </div>
           <div className="card space-y-2 p-3">
             {events.length === 0 && <div className="text-sm text-muted">Waiting for events…</div>}
             {events.map((ev, i) => (

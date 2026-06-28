@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import io
+import ipaddress
+import socket
 import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -22,6 +25,98 @@ from ..skills import (
     install_skill_dir,
     list_skills,
 )
+
+# RFC1918 / link-local / loopback networks for SSRF guard (E4).
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network(n)
+    for n in (
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+        "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10",
+    )
+]
+
+
+def _is_private_ip(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+        return any(ip in net for net in _BLOCKED_NETWORKS)
+    except ValueError:
+        return True  # unparseable → fail closed
+
+
+class _PinnedTransport(httpx.AsyncBaseTransport):
+    """DNS-rebinding-safe transport: resolve once, pass the IP, keep Host header."""
+
+    def __init__(self, resolved_ip: str, inner: httpx.AsyncBaseTransport) -> None:
+        self._ip = resolved_ip
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        # Replace the hostname with the pre-resolved IP so the connection goes
+        # to the pinned address regardless of any TTL-based rebind.
+        url = request.url.copy_with(host=self._ip)
+        request = request.__class__(
+            method=request.method, url=url, headers=request.headers, stream=request.stream
+        )
+        return await self._inner.handle_async_request(request)
+
+
+async def _ssrf_safe_fetch(url: str) -> bytes:
+    """Fetch a URL with SSRF and DNS-rebinding protection.
+
+    1. Resolve DNS once.
+    2. Validate the resolved IP is not RFC1918/link-local/loopback.
+    3. Connect directly to the resolved IP (PinnedTransport) — immune to rebind.
+    4. Accept only text/* content types.
+    5. Cap at 256 KB.
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=422, detail="invalid URL: no hostname")
+
+    # Step 1: resolve DNS once.
+    try:
+        infos = socket.getaddrinfo(hostname, parsed.port or 443, proto=socket.IPPROTO_TCP)
+        resolved_ip = infos[0][4][0]
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail=f"DNS resolution failed: {exc}") from exc
+
+    # Step 2: block private IPs.
+    if _is_private_ip(resolved_ip):
+        raise HTTPException(status_code=422, detail="URL resolves to a private/reserved address")
+
+    # Step 3: fetch via pinned IP transport.
+    try:
+        async with httpx.AsyncClient(
+            transport=_PinnedTransport(resolved_ip, httpx.AsyncHTTPTransport()),
+            timeout=httpx.Timeout(connect=10.0, read=30.0),
+            follow_redirects=False,
+        ) as client:
+            resp = await client.get(url, headers={"Host": hostname})
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=422, detail=f"fetch failed: {exc}") from exc
+
+    if resp.is_redirect:
+        raise HTTPException(status_code=422, detail="redirects not allowed for security reasons")
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=422, detail=f"remote returned HTTP {resp.status_code}")
+
+    # Step 4: content-type gate (text/* only).
+    ct = resp.headers.get("content-type", "")
+    if not ct.lower().startswith("text/"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"content-type must be text/* (got {ct!r}). Only plain-text runbooks are supported.",
+        )
+
+    # Step 5: size cap.
+    content = resp.content
+    if len(content) > 256 * 1024:
+        raise HTTPException(status_code=422, detail="runbook exceeds 256 KB limit")
+
+    return content
 
 _WRITER_ROLES = {"admin", "operator"}
 
@@ -219,6 +314,50 @@ async def reject_skill(
         subject_ref=str(row.id), detail={"slug": row.slug, "note": body.note},
     )
     return {"id": str(row.id), "slug": row.slug, "rejected": True}
+
+
+class FromUrlBody(BaseModel):
+    url: str
+
+
+@router.post("/from-url", status_code=202)
+async def codify_from_url(
+    body: FromUrlBody,
+    principal: Principal = Depends(require_token),
+):
+    """Fetch a runbook URL and enqueue a codify_from_url job. Admin/operator only.
+
+    SSRF guard: resolve-once + RFC1918/link-local blocklist + DNS-rebinding protection
+    via IP-direct httpx transport. Accepts text/* only, 256 KB max.
+    """
+    _require_writer(principal)
+    content = await _ssrf_safe_fetch(body.url)
+    text_content = content.decode("utf-8", errors="replace")
+
+    async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)
+        job_row = (
+            await s.execute(
+                text(
+                    "INSERT INTO jobs (org_id, kind, payload, status, attempts) "
+                    "VALUES (:org, 'codify_from_url', "
+                    "CAST(:payload AS jsonb), 'queued', 0) RETURNING id"
+                ),
+                {
+                    "org": principal.org_id,
+                    "payload": __import__("json").dumps(
+                        {"url": body.url, "content": text_content, "org_id": principal.org_id}
+                    ),
+                },
+            )
+        ).first()
+
+    actor = f"user:{principal.user_id}" if principal.user_id else "system"
+    await record_audit(
+        principal.org_id, actor, "skill.from_url_queued",
+        detail={"url": body.url, "job_id": str(job_row.id)},
+    )
+    return {"job_id": str(job_row.id), "status": "queued", "message": "Codify job queued — check Proposed Skills in ~30s."}
 
 
 @router.get("/{slug}")

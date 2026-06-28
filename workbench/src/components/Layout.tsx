@@ -9,6 +9,7 @@ import {
 } from "./icons";
 import { MissionControl } from "../pages/MissionControl";
 import { RunDetail } from "../pages/RunDetail";
+import { RunTimeline } from "../pages/RunTimeline";
 import { Skills } from "../pages/Skills";
 import { ProposedSkills } from "../pages/ProposedSkills";
 import { Connectors } from "../pages/Connectors";
@@ -22,6 +23,7 @@ import { Providers } from "../pages/Providers";
 import { Catalog } from "../pages/Catalog";
 import { CatalogConnect } from "../pages/CatalogConnect";
 import { Tokens } from "../pages/Tokens";
+import { TrustLadder } from "../pages/TrustLadder";
 
 type NavEntry =
   | { kind: "section"; label: string }
@@ -43,6 +45,7 @@ const NAV: NavEntry[] = [
   { kind: "link", to: "/schedules",       label: "Schedules",       icon: <IconClock /> },
   { kind: "link", to: "/audit",           label: "Audit",           icon: <IconList /> },
   { kind: "link", to: "/tokens",          label: "API Tokens",      icon: <IconKey /> },
+  { kind: "link", to: "/trust-ladder",   label: "Trust Ladder",    icon: <IconShieldCheck /> },
 ];
 
 function NavBadge({ count }: { count: number }) {
@@ -153,6 +156,8 @@ export function Layout() {
         <Routes>
           <Route path="/" element={<MissionControl />} />
           <Route path="/runs/:id" element={<RunDetail />} />
+          <Route path="/runs/:id/timeline" element={<RunTimeline />} />
+          <Route path="/trust-ladder" element={<TrustLadder />} />
           <Route path="/knowledge" element={<Knowledge />} />
           <Route path="/findings" element={<Findings />} />
           <Route path="/processes" element={<Processes />} />

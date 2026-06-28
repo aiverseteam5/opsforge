@@ -9,6 +9,11 @@ All notable changes to OpsForge are documented here.
 - **Signed delegation tokens** — `POST /orgs/{org_id}/delegation-tokens` issues short-lived HS256 JWTs (max 15 min, `jti` revocation, org-scoped) for A2A trust across agent dispatch boundaries. `delegation_tokens` table with FORCE RLS.
 - **`scope` enforcement on `Principal`** — delegation tokens carry a `scope: list[str]` of allowed tool IDs; the policy engine enforces it on every tool dispatch (403 on scope violation).
 - **Premium workbench UI** — inline SVG icon system, toast notifications, confirm-dialog hook (replaces `window.confirm`), skeleton loading, hero stat cards, live nav badges.
+- **E2 — Incident War Room / Timeline** — `GET /api/v1/runs/{id}/timeline` with seq/cursor pagination; workbench page `/runs/:id/timeline` with live 5s refresh and per-kind icons.
+- **E3 — Predictive Health Scoring** — `GET /api/v1/health-score` uses ANN similarity on `patterns` (HNSW) against 24h event activity; 5-min in-memory cache per org; graceful empty when < 3 patterns; Mission Control health widget.
+- **E4 — Runbook URL → Skill Codification** — `POST /api/v1/skills/from-url` with SSRF guard (resolve-once + RFC1918 blocklist + DNS-rebinding via IP-direct httpx transport); `codify_from_url` worker job; "Codify from URL" panel on Skills page.
+- **E5 — Slack /opsforge command** — `/opsforge investigate <target>` slash command handler; immediate 200 ack (3-second constraint); async `response_url` dispatch post; timestamp replay-attack protection.
+- **E6 — Trust Ladder visibility** — `GET /api/v1/trust-ladder` with per-tool execution/graduation stats; `/trust-ladder` workbench page with progress bars; all-time clean execution counts (no time window).
 
 ### Changed
 - `hash_token()` in `security.py` now uses HMAC-SHA256 keyed on `OPSFORGE_TOKEN_HMAC_SECRET` when set; all new tokens get `token_version=1`.

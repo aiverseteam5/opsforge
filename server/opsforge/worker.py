@@ -403,6 +403,152 @@ async def handle_codify_skill(payload: dict[str, Any]) -> None:
         logger.warning("codify_skill: slack notify failed for %r", slug, exc_info=True)
 
 
+async def handle_codify_from_url(payload: dict[str, Any]) -> None:
+    """Codify a runbook from pre-fetched URL content (E4).
+
+    The API layer already fetched and SSRF-validated the content; this handler
+    just runs the same LLM codify prompt and inserts a proposed skill.
+    """
+    import json
+    import re
+
+    from sqlalchemy import text
+
+    from .db import record_audit, scope_to_org, session_factory
+    from .gateway import LiteLLMGateway
+    from .knowledge import _vector_literal
+    from .security import redact
+
+    url = payload.get("url", "unknown")
+    org_id = payload.get("org_id")
+    content = payload.get("content", "")
+    if not org_id or not content:
+        raise ValueError("codify_from_url job missing org_id or content")
+
+    content = redact(content)[:24576]  # 24K char cap
+
+    _EXTRACT_TOOL = {
+        "type": "function",
+        "function": {
+            "name": "extract_skill_data",
+            "description": "Extract a reusable OpsForge skill from a runbook.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "slug": {"type": "string"},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "instructions_md": {"type": "string"},
+                    "skill_yaml": {"type": "string"},
+                },
+                "required": ["slug", "name", "description", "instructions_md", "skill_yaml"],
+            },
+        },
+    }
+
+    gateway = LiteLLMGateway()
+    settings = get_settings()
+
+    result = await gateway.chat(
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are an OpsForge skill architect. Convert this runbook into a reusable "
+                    "skill definition by calling extract_skill_data. Capture the investigation "
+                    "pattern, tools referenced, and step-by-step reasoning."
+                ),
+            },
+            {"role": "user", "content": f"Runbook from {url}:\n\n{content}"},
+        ],
+        tools=[_EXTRACT_TOOL],
+        model=settings.model,
+        tool_choice="required",
+    )
+
+    if not result.tool_calls:
+        logger.warning("codify_from_url: LLM did not call extract_skill_data for %s", url)
+        return
+
+    args = result.tool_calls[0].arguments
+    slug_raw = (args.get("slug") or f"runbook-{url.split('/')[-1][:32]}").lower()
+    slug = re.sub(r"[^a-z0-9-]", "-", slug_raw)[:64].strip("-")
+    name = args.get("name") or slug
+    description = args.get("description") or ""
+    instructions_md = args.get("instructions_md") or ""
+
+    try:
+        import yaml as _yaml
+        manifest_raw = _yaml.safe_load(args.get("skill_yaml") or "") or {}
+    except Exception:
+        manifest_raw = {}
+    manifest_raw.setdefault("schema", "opsforge/skill/v1")
+    manifest_raw["slug"] = slug
+    manifest_raw["source"] = "codified"
+    manifest_raw["runbook_url"] = url
+
+    summary = f"{name}: {description}"
+    embedding: list[float] | None = None
+    try:
+        vecs = await gateway.embedding([summary], settings.embedding_model)
+        embedding = vecs[0] if vecs else None
+    except Exception:
+        logger.warning("codify_from_url: embedding failed for %s", url, exc_info=True)
+
+    async with session_factory().begin() as s:
+        await scope_to_org(s, org_id)
+        skill_row = (
+            await s.execute(
+                text(
+                    "INSERT INTO skills "
+                    "(org_id, slug, version, manifest, instructions, source, enabled) "
+                    "VALUES (:org, :slug, '0.1.0', CAST(:manifest AS jsonb), "
+                    ":instructions, 'codified', false) "
+                    "ON CONFLICT (org_id, slug) DO NOTHING RETURNING id"
+                ),
+                {
+                    "org": org_id,
+                    "slug": slug,
+                    "manifest": json.dumps(manifest_raw),
+                    "instructions": instructions_md,
+                },
+            )
+        ).first()
+
+        if skill_row is None:
+            logger.info("codify_from_url: slug %r already taken", slug)
+            return
+
+        skill_id_str = str(skill_row.id)
+
+        if embedding is not None:
+            await s.execute(
+                text(
+                    "INSERT INTO patterns (org_id, run_id, summary, embedding, resolution, outcome) "
+                    "VALUES (:org, gen_random_uuid(), :summary, CAST(:emb AS vector), :res, CAST(:outcome AS jsonb))"
+                ),
+                {
+                    "org": org_id,
+                    "summary": summary,
+                    "emb": _vector_literal(embedding),
+                    "res": description,
+                    "outcome": json.dumps({"slug": slug, "skill_id": skill_id_str}),
+                },
+            )
+
+    await record_audit(
+        org_id, "system:codify", "skill.proposed_from_url",
+        subject_ref=skill_id_str,
+        detail={"slug": slug, "url": url},
+    )
+    logger.info("codify_from_url: proposed skill %r from %s", slug, url)
+    try:
+        from .surfaces.slack import notify_skill_proposed
+        await notify_skill_proposed(skill_id_str, slug, url)
+    except Exception:
+        logger.warning("codify_from_url: slack notify failed for %r", slug, exc_info=True)
+
+
 # Dispatch table by job.kind.
 HANDLERS: dict[str, Handler] = {
     "noop": handle_noop,
@@ -414,6 +560,7 @@ HANDLERS: dict[str, Handler] = {
     "ingest_knowledge": handle_ingest_knowledge,
     "reconcile": handle_reconcile,
     "codify_skill": handle_codify_skill,
+    "codify_from_url": handle_codify_from_url,
 }
 
 
