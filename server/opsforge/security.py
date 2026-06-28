@@ -10,10 +10,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import binascii
+import logging
 import re
 import secrets
 from datetime import UTC, datetime
 from typing import Any
+
+_log = logging.getLogger("opsforge.security")
 
 import jwt as _jwt
 from cryptography.fernet import Fernet
@@ -178,32 +182,49 @@ async def _verify_delegation_jwt(jwt_str: str, session: AsyncSession) -> Princip
         # (Pre-verification decode is omitted — the org_id from unverified bytes
         # is always identical to the verified one, making the mismatch check dead code.)
         claims = verify_delegation_token(jwt_str, expected_org_id=None)
-        org_id: str | None = claims.get("org_id")
-        if not org_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid delegation token",
-            )
-    except (_jwt.PyJWTError, ValueError):
+    except RuntimeError:
+        # RuntimeError from _signing_key() means a key-misconfiguration, not a bad
+        # token — surfacing it as 500 so operators see it in logs, not as a token error.
+        _log.exception("Delegation signing key misconfiguration")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid delegation token"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Token verification error — check server configuration",
+        ) from None
+    except (binascii.Error, _jwt.PyJWTError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid delegation token",
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
         ) from None
 
+    org_id: str | None = claims.get("org_id")
+    if not org_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid delegation token",
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+        )
+
     # Check that this jti has been issued, not revoked, and not expired at DB level.
+    # Explicit org_id predicate is defense-in-depth: RLS GUC already scopes the
+    # session, but a connection-pool GUC reset edge case would otherwise allow
+    # cross-org jti matches. Both guards must pass.
     await scope_to_org(session, org_id)
     row = (
         await session.execute(
             text(
                 "SELECT 1 FROM delegation_tokens "
-                "WHERE jti = :jti AND revoked_at IS NULL AND expires_at > now()"
+                "WHERE jti = :jti AND org_id = :org_id "
+                "AND revoked_at IS NULL AND expires_at > now()"
             ),
-            {"jti": claims["jti"]},
+            {"jti": claims["jti"], "org_id": org_id},
         )
     ).first()
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Delegation token revoked or not found",
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
         )
 
     return Principal(
@@ -236,7 +257,14 @@ async def require_token(
     ).first()
     if row is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+            headers={
+                "WWW-Authenticate": (
+                    'Bearer error="invalid_token", '
+                    'error_description="Token requires re-issuance — generate a new API token"'
+                )
+            },
         )
     if row.expires_at is not None:
         expires = (
@@ -246,7 +274,9 @@ async def require_token(
         )
         if expires < datetime.now(UTC):
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token expired",
+                headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
             )
     # Best-effort touch; never block auth on it.
     await session.execute(_TOUCH_TOKEN_SQL, {"token_hash": token_hash})

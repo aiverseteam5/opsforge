@@ -2,6 +2,26 @@
 
 All notable changes to OpsForge are documented here.
 
+## [0.3.0] — 2026-06-28 — phase-5/multi-org
+
+### Added
+- **`orgs` table** — gives `org_id` UUIDs a real home with a PK, name, and parent reference. FORCE RLS with org-isolation policy. Backfills from all 26 existing tables via UNION ALL so all existing org identities are registered.
+- **`org_ancestors` join table** — pre-materialized ancestor chains for the multi-org control plane (schema-only; INSERT/UPDATE revoked from `opsforge_app` until Phase 5b policy lands).
+- **Dedicated delegation signing key** — `OPSFORGE_DELEGATION_SIGNING_KEY` decouples JWT signing from API token HMAC; rotating one no longer invalidates the other. Falls back to `OPSFORGE_TOKEN_HMAC_SECRET` with a startup WARNING when unset.
+
+### Changed
+- `GET /api/v1/runs/{id}/timeline` — delegation token callers no longer receive the `scope` field in event payloads (scope belongs to the issuing run's trust context, not the caller's view). Regular API token callers see full payloads unchanged.
+- `GET /api/v1/runs/{id}/events` SSE — same scope-strip applied consistently to both timeline and streaming endpoints for delegation callers.
+- `POST /api/v1/skills/from-url` — runbook content is redacted (`redact()`) before storage in `jobs.payload`; inline `key=value` secrets and Fernet tokens are masked before leaving the fetch boundary.
+
+### Security
+- Delegation signing key minimum-length validation: `OPSFORGE_DELEGATION_SIGNING_KEY` and `OPSFORGE_TOKEN_HMAC_SECRET` must be ≥ 32 bytes; shorter keys are rejected at startup with a clear error rather than silently used.
+- `delegation_tokens` jti lookup now includes explicit `AND org_id = :org_id` predicate as defense-in-depth alongside the RLS GUC.
+- `_verify_delegation_jwt` — RuntimeError (key misconfiguration) now surfaces as 500 rather than being swallowed as 401 "Invalid delegation token"; operators see key problems in logs immediately.
+- `org_ancestors` INSERT/UPDATE revoked from `opsforge_app` to prevent table pre-poisoning before Phase 5b RLS policy lands.
+- All 401 responses on Bearer-protected endpoints now include `WWW-Authenticate: Bearer error="invalid_token"` per RFC 6750.
+- `OPSFORGE_DELEGATION_SIGNING_KEY` added to production startup validator — deploy without it fails loudly at boot rather than silently falling back.
+
 ## [0.2.0] — 2026-06-28 — phase-4/a2a-trust
 
 ### Added

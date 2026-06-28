@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     # urlsafe-base64 32-byte key for HMAC-SHA256 API token hashing.
     # Decoupled from fernet_key so vault creds and token hashes rotate independently.
     token_hmac_secret: str = Field(default="")
+    # urlsafe-base64 32-byte key for JWT delegation token signing (HS256).
+    # Decoupled from token_hmac_secret so rotating API token hashing does not
+    # invalidate in-flight delegation tokens (and vice versa). When unset,
+    # delegation.py falls back to token_hmac_secret with a startup WARNING.
+    delegation_signing_key: str = Field(default="")
 
     org_id: str = DEFAULT_ORG_ID
 
@@ -164,6 +169,7 @@ class Settings(BaseSettings):
                     ("OPSFORGE_WEBHOOK_SECRET", self.webhook_secret),
                     ("OPSFORGE_FERNET_KEY", self.fernet_key),
                     ("OPSFORGE_TOKEN_HMAC_SECRET", self.token_hmac_secret),
+                    ("OPSFORGE_DELEGATION_SIGNING_KEY", self.delegation_signing_key),
                 ]
                 if not val
             ]
