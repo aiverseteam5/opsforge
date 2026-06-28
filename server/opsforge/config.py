@@ -169,6 +169,7 @@ class Settings(BaseSettings):
                     ("OPSFORGE_WEBHOOK_SECRET", self.webhook_secret),
                     ("OPSFORGE_FERNET_KEY", self.fernet_key),
                     ("OPSFORGE_TOKEN_HMAC_SECRET", self.token_hmac_secret),
+                    ("OPSFORGE_DELEGATION_SIGNING_KEY", self.delegation_signing_key),
                 ]
                 if not val
             ]

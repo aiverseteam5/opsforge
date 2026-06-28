@@ -172,7 +172,7 @@ async def stream_events(run_id: UUID, principal: Principal = Depends(require_tok
             events = await _fetch_events(run_id, last_seq, principal.org_id)
             for ev in events:
                 last_seq = ev["seq"]
-                payload = ev["payload"]
+                payload = ev["payload"] or {}
                 if principal.scope is not None:
                     payload = {k: v for k, v in payload.items() if k != "scope"}
                 data = json.dumps({"seq": ev["seq"], "payload": payload})

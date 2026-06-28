@@ -10,13 +10,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import binascii
 import logging
 import re
 import secrets
 from datetime import UTC, datetime
+from typing import Any
 
 _log = logging.getLogger("opsforge.security")
-from typing import Any
 
 import jwt as _jwt
 from cryptography.fernet import Fernet
@@ -181,22 +182,28 @@ async def _verify_delegation_jwt(jwt_str: str, session: AsyncSession) -> Princip
         # (Pre-verification decode is omitted — the org_id from unverified bytes
         # is always identical to the verified one, making the mismatch check dead code.)
         claims = verify_delegation_token(jwt_str, expected_org_id=None)
-        org_id: str | None = claims.get("org_id")
-        if not org_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid delegation token",
-            )
-    except (_jwt.PyJWTError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid delegation token"
-        ) from None
-    except Exception:
-        _log.exception("Unexpected error verifying delegation token")
+    except RuntimeError:
+        # RuntimeError from _signing_key() means a key-misconfiguration, not a bad
+        # token — surfacing it as 500 so operators see it in logs, not as a token error.
+        _log.exception("Delegation signing key misconfiguration")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Token verification error — check server logs",
+            detail="Token verification error — check server configuration",
         ) from None
+    except (binascii.Error, _jwt.PyJWTError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid delegation token",
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+        ) from None
+
+    org_id: str | None = claims.get("org_id")
+    if not org_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid delegation token",
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+        )
 
     # Check that this jti has been issued, not revoked, and not expired at DB level.
     # Explicit org_id predicate is defense-in-depth: RLS GUC already scopes the
@@ -217,6 +224,7 @@ async def _verify_delegation_jwt(jwt_str: str, session: AsyncSession) -> Princip
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Delegation token revoked or not found",
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
         )
 
     return Principal(
