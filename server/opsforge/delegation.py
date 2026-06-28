@@ -27,6 +27,12 @@ _DEV_KEY = b"dev-delegation-key-not-for-production-use"
 def _signing_key() -> bytes:
     secret = get_settings().token_hmac_secret
     if not secret:
+        if get_settings().environment != "dev":
+            raise RuntimeError(
+                "OPSFORGE_TOKEN_HMAC_SECRET must be set in non-dev environments. "
+                "Generate with: python -c \"import os,base64; "
+                "print(base64.urlsafe_b64encode(os.urandom(32)).decode())\""
+            )
         return _DEV_KEY
     return base64.urlsafe_b64decode(secret)
 
@@ -60,11 +66,11 @@ def mint_delegation_token(
     return token, jti
 
 
-def verify_delegation_token(jwt_str: str, expected_org_id: str) -> dict:
+def verify_delegation_token(jwt_str: str, expected_org_id: str | None = None) -> dict:
     """Verify a delegation JWT and return its claims.
 
     Raises jwt.PyJWTError on invalid/expired tokens.
-    Raises ValueError if org_id claim does not match expected_org_id.
+    Raises ValueError if expected_org_id is provided and does not match the claim.
     """
     claims: dict = jwt.decode(
         jwt_str,
@@ -72,7 +78,7 @@ def verify_delegation_token(jwt_str: str, expected_org_id: str) -> dict:
         algorithms=["HS256"],
         options={"require": ["iss", "sub", "org_id", "scope", "jti", "exp", "iat"]},
     )
-    if claims.get("org_id") != expected_org_id:
+    if expected_org_id is not None and claims.get("org_id") != expected_org_id:
         raise ValueError(
             f"org_id mismatch: token={claims.get('org_id')!r} "
             f"expected={expected_org_id!r}"

@@ -69,12 +69,7 @@ export const IconCpu = (p: IconProps) => (
   </I>
 );
 
-export const IconLayoutGrid = (p: IconProps) => (
-  <I {...p}>
-    <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
-    <rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" />
-  </I>
-);
+export const IconLayoutGrid = IconGrid;
 
 export const IconZap = (p: IconProps) => (
   <I {...p}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></I>

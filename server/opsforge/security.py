@@ -174,30 +174,28 @@ async def _verify_delegation_jwt(jwt_str: str, session: AsyncSession) -> Princip
     from .delegation import verify_delegation_token
 
     try:
-        # Decode without signature verification to extract org_id for the DB lookup.
-        unverified: dict = _jwt.decode(
-            jwt_str, options={"verify_signature": False}
-        )
-        org_id: str | None = unverified.get("org_id")
+        # Verify signature and expiry first; extract org_id from verified claims only.
+        # (Pre-verification decode is omitted — the org_id from unverified bytes
+        # is always identical to the verified one, making the mismatch check dead code.)
+        claims = verify_delegation_token(jwt_str, expected_org_id=None)
+        org_id: str | None = claims.get("org_id")
         if not org_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid delegation token",
             )
-        # Verify signature, expiry, and org_id match in one call.
-        claims = verify_delegation_token(jwt_str, org_id)
     except (_jwt.PyJWTError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid delegation token"
         ) from None
 
-    # Check that this jti has been issued and not revoked.
+    # Check that this jti has been issued, not revoked, and not expired at DB level.
     await scope_to_org(session, org_id)
     row = (
         await session.execute(
             text(
                 "SELECT 1 FROM delegation_tokens "
-                "WHERE jti = :jti AND revoked_at IS NULL"
+                "WHERE jti = :jti AND revoked_at IS NULL AND expires_at > now()"
             ),
             {"jti": claims["jti"]},
         )

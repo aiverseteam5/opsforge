@@ -580,7 +580,8 @@ async def run_agent(
 
                 if tc.name == RESERVED_PROPOSE:
                     out = await _handle_propose(
-                        run, manifest, skill, tc.arguments, grounding
+                        run, manifest, skill, tc.arguments, grounding,
+                        scope=delegation_scope,
                     )
                     await append_run_event(run_id, org_id, "proposal", redact(out))
                     messages.append(make_tool_message(tc, out))
@@ -735,8 +736,15 @@ async def _handle_propose(
     skill: dict[str, Any],
     args: dict[str, Any],
     grounding: dict[str, Any] | None = None,
+    scope: list[str] | None = None,
 ) -> dict[str, Any]:
     tool_fqn = args.get("tool", "")
+    # Delegation scope gates proposals the same way it gates direct tool calls.
+    if scope is not None and tool_fqn not in scope:
+        return {
+            "error": f"tool {tool_fqn} not permitted by delegation scope",
+            "policy": {"allowed": False, "rules": ["scope_not_permitted"]},
+        }
     trace = resolve_proposal(
         manifest, tool_fqn, skill.get("trust_overrides"), grounding=grounding
     )

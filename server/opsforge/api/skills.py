@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import ipaddress
+import json
 import socket
 import tarfile
 import tempfile
@@ -26,12 +28,14 @@ from ..skills import (
     list_skills,
 )
 
-# RFC1918 / link-local / loopback networks for SSRF guard (E4).
+# RFC1918 / link-local / loopback / reserved networks for SSRF guard (E4).
 _BLOCKED_NETWORKS = [
     ipaddress.ip_network(n)
     for n in (
         "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
         "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10",
+        "0.0.0.0/8",      # host-on-this-network (routes to loopback on Linux)
+        "100.64.0.0/10",  # CGNAT shared address space
     )
 ]
 
@@ -39,6 +43,9 @@ _BLOCKED_NETWORKS = [
 def _is_private_ip(addr: str) -> bool:
     try:
         ip = ipaddress.ip_address(addr)
+        # IPv4-mapped IPv6 (::ffff:192.168.x.x) → check the underlying IPv4 address.
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
         return any(ip in net for net in _BLOCKED_NETWORKS)
     except ValueError:
         return True  # unparseable → fail closed
@@ -76,9 +83,10 @@ async def _ssrf_safe_fetch(url: str) -> bytes:
     if not hostname:
         raise HTTPException(status_code=422, detail="invalid URL: no hostname")
 
-    # Step 1: resolve DNS once.
+    # Step 1: resolve DNS once (async — blocking socket.getaddrinfo would stall the event loop).
     try:
-        infos = socket.getaddrinfo(hostname, parsed.port or 443, proto=socket.IPPROTO_TCP)
+        loop = asyncio.get_event_loop()
+        infos = await loop.getaddrinfo(hostname, parsed.port or 443, proto=socket.IPPROTO_TCP)
         resolved_ip = infos[0][4][0]
     except OSError as exc:
         raise HTTPException(status_code=422, detail=f"DNS resolution failed: {exc}") from exc
@@ -91,7 +99,7 @@ async def _ssrf_safe_fetch(url: str) -> bytes:
     try:
         async with httpx.AsyncClient(
             transport=_PinnedTransport(resolved_ip, httpx.AsyncHTTPTransport()),
-            timeout=httpx.Timeout(connect=10.0, read=30.0),
+            timeout=httpx.Timeout(30.0, connect=10.0),
             follow_redirects=False,
         ) as client:
             resp = await client.get(url, headers={"Host": hostname})
@@ -345,7 +353,7 @@ async def codify_from_url(
                 ),
                 {
                     "org": principal.org_id,
-                    "payload": __import__("json").dumps(
+                    "payload": json.dumps(
                         {"url": body.url, "content": text_content, "org_id": principal.org_id}
                     ),
                 },

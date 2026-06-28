@@ -22,6 +22,7 @@ from ..skills import get_skill
 router = APIRouter(prefix="/api/v1/runs", tags=["runs"])
 
 _TERMINAL = {"done", "failed", "cancelled"}
+_SUMMARY_MAX_LEN = 200
 
 
 class RunCreate(BaseModel):
@@ -243,7 +244,7 @@ async def get_run_timeline(
                 "ts": r.ts.isoformat() if r.ts else None,
                 "kind": r.kind,
                 "actor": actor,
-                "summary": str(summary)[:200],
+                "summary": str(summary)[:_SUMMARY_MAX_LEN],
                 "payload": payload,
                 "proposal_id": payload.get("proposal_id"),
             }

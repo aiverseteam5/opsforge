@@ -114,7 +114,7 @@ async def _compute_health(org_id: str) -> dict[str, Any]:
         rows = (
             await s.execute(
                 text(
-                    f"SELECT id, summary, 1 - (embedding <=> CAST('{vec_lit}' AS vector)) AS similarity "
+                    "SELECT id, summary, 1 - (embedding <=> CAST(:qv AS vector)) AS similarity "
                     "FROM patterns WHERE org_id=:org AND embedding IS NOT NULL "
                     "ORDER BY embedding <=> CAST(:qv AS vector) LIMIT 5"
                 ),

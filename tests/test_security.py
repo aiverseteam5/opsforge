@@ -33,7 +33,6 @@ class _HmacSecret:
 
     def __init__(self, key_bytes: bytes | None = None):
         self._key = key_bytes or os.urandom(32)
-        self._secret = _set_hmac_secret(self._key) if key_bytes is not None or True else None
         self._orig: str | None = None
 
     @property

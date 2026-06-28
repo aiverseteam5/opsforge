@@ -33,6 +33,8 @@ DEFAULT_SKILL = "incident-investigation"
 _MENTION_RE = re.compile(r"<@[A-Z0-9]+>")
 _TARGET_RE = re.compile(r"^[A-Za-z0-9._\-]{1,128}$")
 _SLACK_TIMESTAMP_TOLERANCE_S = 300  # 5 minutes
+_SLACK_RESPONSE_TIMEOUT_S = 10  # outbound response_url / API calls
+_ALLOWED_RESPONSE_URL_PREFIX = "https://hooks.slack.com/"  # SSRF guard
 
 # A poster sends a rendered message to a channel. Swappable in tests.
 Poster = Callable[[str, str, list[dict[str, Any]]], Awaitable[dict[str, Any]]]
@@ -69,7 +71,7 @@ async def post_message(
     if not token:
         # Dev / tests with no workspace: render but don't send.
         return {"ok": False, "skipped": "no slack_bot_token", "channel": channel}
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=_SLACK_RESPONSE_TIMEOUT_S) as client:
         resp = await client.post(
             "https://slack.com/api/chat.postMessage",
             headers={"Authorization": f"Bearer {token}"},
@@ -257,23 +259,25 @@ async def _opsforge_async_dispatch(
         _log.info("opsforge slash: dispatched run %s for target %s", run_id, target)
     except Exception as exc:
         _log.warning("opsforge slash: dispatch failed for %s: %s", target, exc)
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=_SLACK_RESPONSE_TIMEOUT_S) as client:
             await client.post(
                 response_url,
                 json={"response_type": "ephemeral", "text": f"Investigation failed: {exc}"},
             )
         return
 
-    # Poll until terminal (max 3 min), post "Still investigating..." at 3 min mark.
+    # Poll until terminal (max 3 min), post "Still investigating..." at 2 min mark.
     _TERMINAL = {"done", "failed", "cancelled"}
     _POLL_INTERVAL = 5.0
     _MAX_WAIT = 180.0
-    _WARN_AT = 180.0
+    _WARN_AT = 120.0  # warn at 2 min, not at the timeout itself
     warned = False
     elapsed = 0.0
+    row = None  # initialise before loop so post-loop code is never unbound
 
-    from ..db import scope_to_org, session_factory
     from ..config import get_settings as _get_settings
+    from ..db import scope_to_org, session_factory
+    from sqlalchemy import text as _text
 
     org_id = _get_settings().org_id
     while elapsed < _MAX_WAIT + _POLL_INTERVAL:
@@ -281,20 +285,23 @@ async def _opsforge_async_dispatch(
         elapsed += _POLL_INTERVAL
         if not warned and elapsed >= _WARN_AT:
             warned = True
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=_SLACK_RESPONSE_TIMEOUT_S) as client:
                 await client.post(
                     response_url,
                     json={"response_type": "ephemeral", "text": "Still investigating... hang tight."},
                 )
-        async with session_factory().begin() as s:
-            await scope_to_org(s, org_id)
-            from sqlalchemy import text as _text
-            row = (
-                await s.execute(
-                    _text("SELECT status, report_json FROM runs WHERE id=:id"),
-                    {"id": run_id},
-                )
-            ).first()
+        try:
+            async with session_factory().begin() as s:
+                await scope_to_org(s, org_id)
+                row = (
+                    await s.execute(
+                        _text("SELECT status, report_json FROM runs WHERE id=:id"),
+                        {"id": run_id},
+                    )
+                ).first()
+        except Exception as exc:
+            _log.warning("opsforge slash: DB poll error for run %s: %s", run_id, exc)
+            continue
         if row and row.status in _TERMINAL:
             break
 
@@ -308,7 +315,7 @@ async def _opsforge_async_dispatch(
         except Exception:
             blocks = []
             summary = "Investigation complete"
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=_SLACK_RESPONSE_TIMEOUT_S) as client:
             try:
                 await client.post(response_url, json={
                     "response_type": "in_channel",
@@ -318,14 +325,14 @@ async def _opsforge_async_dispatch(
             except Exception as exc:
                 _log.warning("opsforge slash: response_url post failed: %s", exc)
     else:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=_SLACK_RESPONSE_TIMEOUT_S) as client:
             try:
                 await client.post(response_url, json={
                     "response_type": "ephemeral",
                     "text": f"Investigation ended with status: {row.status}.",
                 })
-            except Exception:
-                pass
+            except Exception as exc:
+                _log.warning("opsforge slash: response_url post failed (non-done): %s", exc)
 
 
 async def handle_opsforge_slash(form: dict[str, Any]) -> dict[str, Any]:
@@ -351,6 +358,9 @@ async def handle_opsforge_slash(form: dict[str, Any]) -> dict[str, Any]:
 
     if not response_url:
         return {"response_type": "ephemeral", "text": "No response_url provided by Slack."}
+
+    if not response_url.startswith(_ALLOWED_RESPONSE_URL_PREFIX):
+        return {"response_type": "ephemeral", "text": "Invalid response_url."}
 
     user_id = form.get("user_id")
     asyncio.create_task(

@@ -29,7 +29,7 @@ async def get_trust_ladder(principal: Principal = Depends(require_token)):
                 text(
                     "SELECT tool, action_class, "
                     "count(*) AS total, "
-                    "count(*) FILTER (WHERE state = 'executed' AND rolled_back_at IS NULL) AS clean, "
+                    "count(*) FILTER (WHERE state = 'succeeded' AND rolled_back_at IS NULL) AS clean, "
                     "count(*) FILTER (WHERE rolled_back_at IS NOT NULL) AS rolled_back "
                     "FROM actions WHERE org_id = :org "
                     "GROUP BY tool, action_class ORDER BY tool"

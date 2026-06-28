@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import time
 
 import pytest
 from conftest import api_client
@@ -21,7 +22,7 @@ def test_verify_signature_roundtrip(monkeypatch):
 
     monkeypatch.setattr(slack, "get_settings", lambda: S())
     body = b'{"type":"event_callback"}'
-    ts = "1700000000"
+    ts = str(int(time.time()))
     base = f"v0:{ts}:{body.decode()}".encode()
     good = "v0=" + hmac.new(b"shhh", base, hashlib.sha256).hexdigest()
     assert slack.verify_signature(ts, good, body) is True
