@@ -553,3 +553,50 @@ def test_delegation_token_with_new_key_fails_under_old_hmac_key():
     with _HmacSecret():
         with pytest.raises(jwt.PyJWTError):
             verify_delegation_token(token, org_id)
+
+
+def test_signing_key_raises_runtime_error_in_nondev_without_keys():
+    """_signing_key() raises RuntimeError when both keys are absent in a non-dev environment."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from opsforge import delegation as _d
+    from opsforge.delegation import _signing_key
+
+    fake_settings = SimpleNamespace(
+        delegation_signing_key="",
+        token_hmac_secret="",
+        environment="production",
+    )
+    with patch("opsforge.delegation.get_settings", return_value=fake_settings):
+        with pytest.raises(RuntimeError, match="OPSFORGE_DELEGATION_SIGNING_KEY must be set"):
+            _signing_key()
+
+
+def test_signing_key_fallback_warning_fires_only_once():
+    """_key_fallback_warned dedup: the fallback WARNING is logged at most once per process."""
+    import base64
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from opsforge import delegation as _d
+    from opsforge.delegation import _signing_key
+
+    hmac_key = base64.urlsafe_b64encode(os.urandom(32)).decode()
+    fake_settings = SimpleNamespace(
+        delegation_signing_key="",
+        token_hmac_secret=hmac_key,
+        environment="production",
+    )
+    _d._key_fallback_warned = False
+    try:
+        with patch("opsforge.delegation.get_settings", return_value=fake_settings):
+            with patch.object(_d._log, "warning") as mock_warn:
+                _signing_key()
+                _signing_key()
+                _signing_key()
+            assert mock_warn.call_count == 1, (
+                f"expected warning exactly once, got {mock_warn.call_count}"
+            )
+    finally:
+        _d._key_fallback_warned = False
