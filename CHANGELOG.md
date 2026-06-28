@@ -2,7 +2,7 @@
 
 All notable changes to OpsForge are documented here.
 
-## [Unreleased] — phase-4/a2a-trust
+## [0.2.0] — 2026-06-28 — phase-4/a2a-trust
 
 ### Added
 - **HMAC-SHA256 API token hashing** — `OPSFORGE_TOKEN_HMAC_SECRET` env var replaces plain SHA-256 token hashing; falls back to SHA-256 in dev when unset (`token_version` column tracks hash scheme per token).
@@ -24,6 +24,14 @@ All notable changes to OpsForge are documented here.
 - F1: `require_token()` now rejects SHA-256 tokens when HMAC is configured.
 - F2: `delegation.verify_delegation_token()` validates `org_id` claim against the request context.
 - F3/F4: `delegation_tokens` table has `FORCE ROW LEVEL SECURITY` with org-isolation policy.
+- Pre-landing: `health_score.py` SQL → parameterized query (vector similarity was f-string injectable).
+- Pre-landing: `security.py` JWT revocation check now includes `AND expires_at > now()`.
+- Pre-landing: `_verify_delegation_jwt` removed circular self-validation; org_id now extracted from verified claims only.
+- Pre-landing: `_signing_key()` raises `RuntimeError` in non-dev environments when `OPSFORGE_TOKEN_HMAC_SECRET` is unset.
+- Adversarial: `_ssrf_safe_fetch` enforces `https://` only before DNS resolution; streaming body with 256 KB cap prevents unbounded memory.
+- Adversarial: Slack dispatch failure returns generic error (no internal detail leak); background asyncio tasks held via strong reference to prevent GC.
+- Adversarial: `_handle_propose()` scope check now also blocks delegation callers from out-of-scope proposals via `RESERVED_PROPOSE`.
+- Migration 0027: `ix_actions_org` and `ix_run_events_run_created` perf indexes.
 
 ---
 
