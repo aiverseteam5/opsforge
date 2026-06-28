@@ -379,7 +379,8 @@ async def _load_run(run_id: UUID, org_id: str = "") -> dict[str, Any] | None:
         row = (
             await s.execute(
                 text(
-                    "SELECT id, org_id, skill_id, status, trigger, model, parent_run_id "
+                    "SELECT id, org_id, skill_id, status, trigger, model, "
+                    "parent_run_id, delegation_scope "
                     "FROM runs WHERE id = :id"
                 ),
                 {"id": run_id},
@@ -509,6 +510,7 @@ async def run_agent(
     instructions = skill.get("instructions") or ""
     inputs = (run.get("trigger") or {}).get("payload") or {}
     chosen_model = model or run.get("model") or skill.get("model") or _default_model()
+    delegation_scope: list[str] | None = run.get("delegation_scope")
 
     await _set_running(run_id, chosen_model, org_id=org_id)
 
@@ -594,7 +596,7 @@ async def run_agent(
 
                 # A connector tool call.
                 fqn = name_to_fqn(tc.name)
-                trace = check_tool_call(manifest, fqn, tc.arguments)
+                trace = check_tool_call(manifest, fqn, tc.arguments, scope=delegation_scope)
                 if not trace["allowed"]:
                     await append_run_event(
                         run_id, org_id, "error", {"tool": fqn, "policy": trace}
@@ -702,13 +704,17 @@ async def _create_child_run(
     import json
 
     trigger = {"kind": "subagent", "payload": inputs, "surface": None}
+    # Inherit parent's delegation scope so scoped tokens can't escape via subagents.
+    parent_scope = parent.get("delegation_scope")
     async with session_factory().begin() as s:
         await scope_to_org(s, str(parent["org_id"]))
         run_id = (
             await s.execute(
                 text(
-                    "INSERT INTO runs (org_id, skill_id, status, parent_run_id, trigger) "
-                    "VALUES (:org,:skill,'queued',:parent,CAST(:trigger AS jsonb)) "
+                    "INSERT INTO runs "
+                    "(org_id, skill_id, status, parent_run_id, trigger, delegation_scope) "
+                    "VALUES (:org,:skill,'queued',:parent,"
+                    "CAST(:trigger AS jsonb),CAST(:scope AS json)) "
                     "RETURNING id"
                 ),
                 {
@@ -716,6 +722,7 @@ async def _create_child_run(
                     "skill": skill_id,
                     "parent": str(parent["id"]),
                     "trigger": json.dumps(trigger),
+                    "scope": json.dumps(parent_scope) if parent_scope is not None else None,
                 },
             )
         ).scalar_one()

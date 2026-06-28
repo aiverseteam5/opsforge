@@ -38,6 +38,8 @@ async def create_run_endpoint(
     _rl: None = Depends(run_dispatch_rate_limit),
     principal: Principal = Depends(require_token),
 ):
+    if principal.role is None:
+        raise HTTPException(status_code=403, detail="delegation tokens cannot dispatch runs")
     # NL path: resolve to a skill + entities (or return candidates if ambiguous).
     if body.nl:
         resolved = await resolve_nl(
