@@ -36,6 +36,9 @@ _SLACK_TIMESTAMP_TOLERANCE_S = 300  # 5 minutes
 _SLACK_RESPONSE_TIMEOUT_S = 10  # outbound response_url / API calls
 _ALLOWED_RESPONSE_URL_PREFIX = "https://hooks.slack.com/"  # SSRF guard
 
+# Strong reference set so create_task'd coroutines are not GC'd before completion.
+_background_tasks: set[asyncio.Task] = set()
+
 # A poster sends a rendered message to a channel. Swappable in tests.
 Poster = Callable[[str, str, list[dict[str, Any]]], Awaitable[dict[str, Any]]]
 
@@ -259,10 +262,12 @@ async def _opsforge_async_dispatch(
         _log.info("opsforge slash: dispatched run %s for target %s", run_id, target)
     except Exception as exc:
         _log.warning("opsforge slash: dispatch failed for %s: %s", target, exc)
+        _log.warning("opsforge slash: dispatch failed for %s: %s", target, exc)
         async with httpx.AsyncClient(timeout=_SLACK_RESPONSE_TIMEOUT_S) as client:
             await client.post(
                 response_url,
-                json={"response_type": "ephemeral", "text": f"Investigation failed: {exc}"},
+                json={"response_type": "ephemeral",
+                      "text": "Investigation could not be started. Check server logs for details."},
             )
         return
 
@@ -363,9 +368,11 @@ async def handle_opsforge_slash(form: dict[str, Any]) -> dict[str, Any]:
         return {"response_type": "ephemeral", "text": "Invalid response_url."}
 
     user_id = form.get("user_id")
-    asyncio.create_task(
+    task = asyncio.create_task(
         _opsforge_async_dispatch(target_raw, response_url, user_id)
     )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     return {
         "response_type": "ephemeral",
         "text": f"Investigating `{target_raw}`... I'll post results here when done.",

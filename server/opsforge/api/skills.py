@@ -83,9 +83,12 @@ async def _ssrf_safe_fetch(url: str) -> bytes:
     if not hostname:
         raise HTTPException(status_code=422, detail="invalid URL: no hostname")
 
+    if parsed.scheme not in {"https"}:
+        raise HTTPException(status_code=422, detail="only https:// URLs are accepted for runbooks")
+
     # Step 1: resolve DNS once (async — blocking socket.getaddrinfo would stall the event loop).
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         infos = await loop.getaddrinfo(hostname, parsed.port or 443, proto=socket.IPPROTO_TCP)
         resolved_ip = infos[0][4][0]
     except OSError as exc:
@@ -119,12 +122,15 @@ async def _ssrf_safe_fetch(url: str) -> bytes:
             detail=f"content-type must be text/* (got {ct!r}). Only plain-text runbooks are supported.",
         )
 
-    # Step 5: size cap.
-    content = resp.content
-    if len(content) > 256 * 1024:
-        raise HTTPException(status_code=422, detail="runbook exceeds 256 KB limit")
+    # Step 5: size cap — stream with accumulation limit (never buffer > 256 KB).
+    _MAX_BODY = 256 * 1024
+    buf = bytearray()
+    async for chunk in resp.aiter_bytes(chunk_size=8192):
+        buf.extend(chunk)
+        if len(buf) > _MAX_BODY:
+            raise HTTPException(status_code=422, detail="runbook exceeds 256 KB limit")
 
-    return content
+    return bytes(buf)
 
 _WRITER_ROLES = {"admin", "operator"}
 

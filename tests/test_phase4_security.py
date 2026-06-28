@@ -130,14 +130,28 @@ async def test_ssrf_safe_fetch_blocks_private_ip():
 
     from opsforge.api.skills import _ssrf_safe_fetch
 
-    with patch(
-        "opsforge.api.skills.socket.getaddrinfo",
-        return_value=[(None, None, None, None, ("192.168.1.1", 0))],
-    ):
+    mock_loop = MagicMock()
+    mock_loop.getaddrinfo = AsyncMock(
+        return_value=[(None, None, None, None, ("192.168.1.1", 0))]
+    )
+    with patch("opsforge.api.skills.asyncio.get_running_loop", return_value=mock_loop):
         with pytest.raises(HTTPException) as exc_info:
-            await _ssrf_safe_fetch("http://internal.example.com/runbook.md")
+            await _ssrf_safe_fetch("https://internal.example.com/runbook.md")
     assert exc_info.value.status_code == 422
     assert "private" in str(exc_info.value.detail).lower()
+
+
+@pytest.mark.asyncio
+async def test_ssrf_safe_fetch_rejects_http_scheme():
+    """Plain http:// URLs must be rejected with 422 (HTTPS-only policy)."""
+    from fastapi import HTTPException
+
+    from opsforge.api.skills import _ssrf_safe_fetch
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _ssrf_safe_fetch("http://example.com/runbook.md")
+    assert exc_info.value.status_code == 422
+    assert "https" in str(exc_info.value.detail).lower()
 
 
 def _mock_ssrf_response(status_code: int, content_type: str, body: bytes):
@@ -150,6 +164,23 @@ def _mock_ssrf_response(status_code: int, content_type: str, body: bytes):
     return resp
 
 
+def _async_iter_bytes(data: bytes, chunk_size: int = 8192):
+    """Return an async generator that yields chunks of data."""
+    async def _gen(chunk_size=chunk_size):
+        for i in range(0, len(data), chunk_size):
+            yield data[i:i + chunk_size]
+    return _gen()
+
+
+def _mock_ssrf_client(mock_resp):
+    """Build a patched AsyncClient context manager returning mock_resp."""
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    return mock_client
+
+
 @pytest.mark.asyncio
 async def test_ssrf_safe_fetch_blocks_redirect():
     """A 301 redirect response raises HTTPException 422."""
@@ -158,20 +189,17 @@ async def test_ssrf_safe_fetch_blocks_redirect():
     from opsforge.api.skills import _ssrf_safe_fetch
 
     mock_resp = _mock_ssrf_response(301, "text/plain", b"")
+    mock_resp.aiter_bytes = lambda chunk_size=8192: _async_iter_bytes(b"")
 
-    with patch("opsforge.api.skills.socket.getaddrinfo",
-               return_value=[(None, None, None, None, ("93.184.216.34", 0))]):
-        with patch("opsforge.api.skills._PinnedTransport") as mock_transport_cls:
-            mock_transport = AsyncMock()
-            mock_transport_cls.return_value = mock_transport
-            with patch("opsforge.api.skills.httpx.AsyncClient") as mock_cls:
-                mock_client = AsyncMock()
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock(return_value=None)
-                mock_client.get = AsyncMock(return_value=mock_resp)
-                mock_cls.return_value = mock_client
+    mock_loop = MagicMock()
+    mock_loop.getaddrinfo = AsyncMock(
+        return_value=[(None, None, None, None, ("93.184.216.34", 0))]
+    )
+    with patch("opsforge.api.skills.asyncio.get_running_loop", return_value=mock_loop):
+        with patch("opsforge.api.skills._PinnedTransport"):
+            with patch("opsforge.api.skills.httpx.AsyncClient", return_value=_mock_ssrf_client(mock_resp)):
                 with pytest.raises(HTTPException) as exc_info:
-                    await _ssrf_safe_fetch("http://example.com/runbook.md")
+                    await _ssrf_safe_fetch("https://example.com/runbook.md")
     assert exc_info.value.status_code == 422
     assert "redirect" in str(exc_info.value.detail).lower()
 
@@ -185,20 +213,17 @@ async def test_ssrf_safe_fetch_blocks_wrong_content_type():
 
     mock_resp = _mock_ssrf_response(200, "application/json", b'{"json": true}')
     mock_resp.is_redirect = False
+    mock_resp.aiter_bytes = lambda chunk_size=8192: _async_iter_bytes(b'{"json": true}')
 
-    with patch("opsforge.api.skills.socket.getaddrinfo",
-               return_value=[(None, None, None, None, ("93.184.216.34", 0))]):
-        with patch("opsforge.api.skills._PinnedTransport") as mock_transport_cls:
-            mock_transport = AsyncMock()
-            mock_transport_cls.return_value = mock_transport
-            with patch("opsforge.api.skills.httpx.AsyncClient") as mock_cls:
-                mock_client = AsyncMock()
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock(return_value=None)
-                mock_client.get = AsyncMock(return_value=mock_resp)
-                mock_cls.return_value = mock_client
+    mock_loop = MagicMock()
+    mock_loop.getaddrinfo = AsyncMock(
+        return_value=[(None, None, None, None, ("93.184.216.34", 0))]
+    )
+    with patch("opsforge.api.skills.asyncio.get_running_loop", return_value=mock_loop):
+        with patch("opsforge.api.skills._PinnedTransport"):
+            with patch("opsforge.api.skills.httpx.AsyncClient", return_value=_mock_ssrf_client(mock_resp)):
                 with pytest.raises(HTTPException) as exc_info:
-                    await _ssrf_safe_fetch("http://example.com/data.json")
+                    await _ssrf_safe_fetch("https://example.com/data.json")
     assert exc_info.value.status_code == 422
     assert "text/" in str(exc_info.value.detail).lower()
 
@@ -213,20 +238,17 @@ async def test_ssrf_safe_fetch_blocks_oversized_body():
     big_body = b"x" * (256 * 1024 + 1)
     mock_resp = _mock_ssrf_response(200, "text/plain; charset=utf-8", big_body)
     mock_resp.is_redirect = False
+    mock_resp.aiter_bytes = lambda chunk_size=8192: _async_iter_bytes(big_body)
 
-    with patch("opsforge.api.skills.socket.getaddrinfo",
-               return_value=[(None, None, None, None, ("93.184.216.34", 0))]):
-        with patch("opsforge.api.skills._PinnedTransport") as mock_transport_cls:
-            mock_transport = AsyncMock()
-            mock_transport_cls.return_value = mock_transport
-            with patch("opsforge.api.skills.httpx.AsyncClient") as mock_cls:
-                mock_client = AsyncMock()
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock(return_value=None)
-                mock_client.get = AsyncMock(return_value=mock_resp)
-                mock_cls.return_value = mock_client
+    mock_loop = MagicMock()
+    mock_loop.getaddrinfo = AsyncMock(
+        return_value=[(None, None, None, None, ("93.184.216.34", 0))]
+    )
+    with patch("opsforge.api.skills.asyncio.get_running_loop", return_value=mock_loop):
+        with patch("opsforge.api.skills._PinnedTransport"):
+            with patch("opsforge.api.skills.httpx.AsyncClient", return_value=_mock_ssrf_client(mock_resp)):
                 with pytest.raises(HTTPException) as exc_info:
-                    await _ssrf_safe_fetch("http://example.com/bigfile.txt")
+                    await _ssrf_safe_fetch("https://example.com/bigfile.txt")
     assert exc_info.value.status_code == 422
     assert "256" in str(exc_info.value.detail)
 
