@@ -17,7 +17,11 @@ branch_labels = None
 depends_on = None
 
 _GUC = "NULLIF(current_setting('opsforge.current_org', true), '')::uuid"
-_PREDICATE = f"(org_id = {_GUC} OR ancestor_id = {_GUC})"
+# USING: reads — can see own ancestor chain AND rows where current org is the ancestor.
+_USING = f"(org_id = {_GUC} OR ancestor_id = {_GUC})"
+# WITH CHECK: writes — can only insert/update rows for own org (org_id = GUC).
+# Prevents an org from injecting rows claiming another org as its descendant.
+_CHECK = f"org_id = {_GUC}"
 
 
 def upgrade() -> None:
@@ -25,8 +29,8 @@ def upgrade() -> None:
         ALTER TABLE org_ancestors ENABLE ROW LEVEL SECURITY;
         ALTER TABLE org_ancestors FORCE ROW LEVEL SECURITY;
         CREATE POLICY org_ancestors_isolation ON org_ancestors
-            USING ({_PREDICATE})
-            WITH CHECK ({_PREDICATE});
+            USING ({_USING})
+            WITH CHECK ({_CHECK});
         GRANT INSERT, UPDATE ON org_ancestors TO opsforge_app;
     """)
 

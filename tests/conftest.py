@@ -76,6 +76,38 @@ async def auth_headers(db_required: None) -> dict[str, str]:
     return {"Authorization": f"Bearer {raw}"}
 
 
+@pytest.fixture
+async def admin_auth_headers(db_required: None) -> dict[str, str]:
+    """Seed an admin-role user + API token and return an Authorization header."""
+    import uuid as _uuid
+
+    from sqlalchemy import text as _text
+
+    from opsforge.config import get_settings
+    from opsforge.db import session_factory
+    from opsforge.security import generate_token
+
+    raw, token_hash = generate_token()
+    user_id = str(_uuid.uuid4())
+    org_id = get_settings().org_id
+    async with session_factory().begin() as s:
+        await s.execute(
+            _text(
+                "INSERT INTO users (id, org_id, email, role) "
+                "VALUES (:id, :org, :email, 'admin')"
+            ),
+            {"id": user_id, "org": org_id, "email": f"admin-{user_id[:8]}@test.local"},
+        )
+        await s.execute(
+            _text(
+                "INSERT INTO api_tokens (org_id, user_id, token_hash, name, token_version) "
+                "VALUES (:org, :uid, :h, 'admin-test', 1)"
+            ),
+            {"org": org_id, "uid": user_id, "h": token_hash},
+        )
+    return {"Authorization": f"Bearer {raw}"}
+
+
 def api_client():
     from httpx import ASGITransport, AsyncClient
 
