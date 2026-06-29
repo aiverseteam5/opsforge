@@ -17,11 +17,13 @@ from .api import (
     audit,
     catalog,
     connectors,
+    conversations,
     delegation,
     graph,
     health_score,
     knowledge,
     llm_providers,
+    orgs,
     runs,
     schedules,
     skills,
@@ -79,8 +81,9 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     for module in (
-        runs, connectors, skills, schedules, actions, webhooks, graph, audit, knowledge,
-        llm_providers, catalog, tokens, delegation, health_score, trust_ladder,
+        runs, conversations, connectors, skills, schedules, actions, webhooks, graph,
+        audit, knowledge, llm_providers, catalog, tokens, delegation, health_score,
+        trust_ladder, orgs,
     ):
         app.include_router(module.router)
     app.include_router(slack_surface.router)

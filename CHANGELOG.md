@@ -2,6 +2,24 @@
 
 All notable changes to OpsForge are documented here.
 
+## [0.4.0] — 2026-06-28 — phase-5b/chat-and-postmortem (unreleased)
+
+### Added
+- **C1+C2 — Conversations API** — `POST /conversations`, `GET /conversations`, `GET /conversations/{id}/messages`, `POST /conversations/{id}/messages`. Posting a user message triggers `resolve_nl()` automatically and returns an assistant reply containing the dispatched run ID (or disambiguation candidates). Full FORCE RLS via `opsforge.current_org` GUC.
+- **C3 — `/chat` workbench page** — Three-panel chat-first interface (conversation list + thread + input). User messages trigger NL dispatch; assistant replies render dispatched run status with live event streaming. Nav item added to sidebar.
+- **C4/E1 — AI Postmortem** — `POST /runs/{id}/postmortem` enqueues a `postmortem` worker job. The job reads run events, calls the LLM to write a blameless postmortem (timeline, root cause, action items, confidence), and stores the result in the `patterns` table for future similarity search. Returns 409 for non-terminal runs.
+- **C5 — Postmortem Slack delivery** — `handle_postmortem` optionally posts a Block Kit postmortem summary to a Slack channel after storing the pattern. Uses `skill_review_channel` from settings or the optional `channel` override in the payload.
+- **C6 — Process discovery setup endpoint** — `POST /knowledge/setup` orchestrates all ingestion jobs in one call: local markdown paths (`ingest`), knowledge connectors (`ingest_knowledge` + `ingest_tickets`), and Slack history (`ingest_slack_history`). Returns a job manifest for polling.
+- **C7 — Slack history ingestion** — `handle_ingest_slack_history` worker job fetches past incident threads from a Slack channel via the Web API and stores them as `behaviour` knowledge chunks with provenance, ready for process discovery.
+- **C8 — `org_ancestors` RLS** — Migration `0030_org_ancestors_rls.py` enables `FORCE ROW LEVEL SECURITY` on `org_ancestors` with an ancestor-chain isolation policy (`USING: org_id = GUC OR ancestor_id = GUC`; `WITH CHECK: org_id = GUC` only — prevents an org from claiming to be another org's ancestor). Re-grants `INSERT, UPDATE` to `opsforge_app` (revoked in Phase 5a until this policy was ready).
+- **Org Ancestors API** — `GET /api/v1/orgs/{id}/ancestors` lists the ancestor chain; `POST /api/v1/orgs/{id}/ancestors` adds an ancestor relationship (admin role required, idempotent). Both endpoints enforce org-scoped access via RLS and the application-layer org-match check.
+
+### Changed
+- `JobKind` Literal extended with `"postmortem"` and `"ingest_slack_history"`.
+- Worker `HANDLERS` dict updated with `handle_postmortem` and `handle_ingest_slack_history`.
+- `conversations` and `postmortem` API types added to the workbench `api.ts` client.
+- Sidebar navigation now includes a **Chat** link above the Knowledge section.
+
 ## [0.3.0] — 2026-06-28 — phase-5/multi-org
 
 ### Added

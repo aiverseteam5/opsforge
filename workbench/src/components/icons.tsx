@@ -144,3 +144,20 @@ export const IconTerminal = (p: IconProps) => (
     <line x1="12" y1="19" x2="20" y2="19" />
   </I>
 );
+
+export const IconChat = (p: IconProps) => (
+  <I {...p}>
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+  </I>
+);
+
+export const IconSend = (p: IconProps) => (
+  <I {...p}>
+    <line x1="22" y1="2" x2="11" y2="13" />
+    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+  </I>
+);
+
+export const IconLoader = (p: IconProps) => (
+  <I {...p}><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></I>
+);

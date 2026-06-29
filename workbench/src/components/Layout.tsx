@@ -5,7 +5,7 @@ import { CommandPalette } from "./CommandPalette";
 import {
   IconGrid, IconBook, IconAlertTriangle, IconFlow, IconShieldCheck,
   IconCpu, IconLayoutGrid, IconZap, IconStar, IconPlug, IconClock,
-  IconList, IconKey, IconActivity,
+  IconList, IconKey, IconActivity, IconChat,
 } from "./icons";
 import { MissionControl } from "../pages/MissionControl";
 import { RunDetail } from "../pages/RunDetail";
@@ -24,6 +24,7 @@ import { Catalog } from "../pages/Catalog";
 import { CatalogConnect } from "../pages/CatalogConnect";
 import { Tokens } from "../pages/Tokens";
 import { TrustLadder } from "../pages/TrustLadder";
+import { Chat } from "../pages/Chat";
 
 type NavEntry =
   | { kind: "section"; label: string }
@@ -31,6 +32,7 @@ type NavEntry =
 
 const NAV: NavEntry[] = [
   { kind: "link", to: "/", label: "Mission Control", icon: <IconGrid />, end: true },
+  { kind: "link", to: "/chat", label: "Chat", icon: <IconChat /> },
   { kind: "section", label: "Knowledge & Truth" },
   { kind: "link", to: "/knowledge",  label: "Knowledge",     icon: <IconBook /> },
   { kind: "link", to: "/findings",   label: "Findings",      icon: <IconAlertTriangle /> },
@@ -155,6 +157,7 @@ export function Layout() {
       <main className="flex-1 overflow-auto p-6">
         <Routes>
           <Route path="/" element={<MissionControl />} />
+          <Route path="/chat" element={<Chat />} />
           <Route path="/runs/:id" element={<RunDetail />} />
           <Route path="/runs/:id/timeline" element={<RunTimeline />} />
           <Route path="/trust-ladder" element={<TrustLadder />} />

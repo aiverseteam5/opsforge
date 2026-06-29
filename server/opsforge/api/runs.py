@@ -196,6 +196,57 @@ async def stream_events(run_id: UUID, principal: Principal = Depends(require_tok
     return StreamingResponse(event_source(), media_type="text/event-stream")
 
 
+class PostmortemBody(BaseModel):
+    channel: str | None = None  # optional Slack channel override
+
+
+@router.post("/{run_id}/postmortem", status_code=202)
+async def request_postmortem(
+    run_id: UUID,
+    body: PostmortemBody,
+    principal: Principal = Depends(require_token),
+):
+    """Enqueue an AI postmortem generation job for a completed run (C4/E1).
+
+    The job reads the run's events, asks the LLM to write a blameless postmortem,
+    stores the result in the patterns table, and optionally delivers it to Slack.
+    Returns 409 if the run is not in a terminal state.
+    """
+    from ..db import enqueue
+
+    async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)
+        row = (
+            await s.execute(
+                text("SELECT status FROM runs WHERE id = :id AND org_id = :org"),
+                {"id": run_id, "org": principal.org_id},
+            )
+        ).first()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if row.status not in _TERMINAL:
+        raise HTTPException(
+            status_code=409,
+            detail=f"run status is '{row.status}' — postmortem requires a terminal run",
+        )
+
+    async with session_factory().begin() as s:
+        await scope_to_org(s, principal.org_id)
+        job_id = await enqueue(
+            s,
+            kind="postmortem",
+            payload={
+                "run_id": str(run_id),
+                "org_id": principal.org_id,
+                "channel": body.channel,
+            },
+            org_id=principal.org_id,
+        )
+
+    return {"job_id": str(job_id), "run_id": str(run_id), "status": "queued"}
+
+
 @router.get("/{run_id}/timeline")
 async def get_run_timeline(
     run_id: UUID,
